@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ==================== 🎯 BIẾN TOÀN CỤC ====================
-app = Flask(__name__)  # 🔥 QUAN TRỌNG: Khai báo app trước
+app = Flask(__name__)
 
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
@@ -101,23 +101,17 @@ def line_webhook():
                             "timestamp": datetime.now().isoformat()
                         }
                         
-                        response_msg = f"""✅ ĐÃ NHẬN LỆNH TỪ LINE
-
-👤 Username: {username}
-🔐 Đã lưu thông tin đăng nhập
-📨 Đang gửi lệnh đến máy local...
-
-🖥️ Local client sẽ tự động chạy automation!"""
-                        send_line_message(chat_id, response_msg, chat_type)
+                        # 🎯 THÔNG BÁO ĐƠN GIẢN - CHỈ 1 DÒNG
+                        send_line_message(chat_id, f"✅ Đã nhận lệnh cho {username}", chat_type)
                         
                         # Log để debug
                         logger.info(f"📨 Sent command to {user_id}: start_automation for {username}")
                         
                     else:
-                        send_line_message(chat_id, "❌ SAI CÚ PHÁP!\n👉 Dùng: .login username:password\n📝 Ví dụ: .login john_doe:123456", chat_type)
+                        send_line_message(chat_id, "❌ Sai cú pháp! Dùng: .login username:password", chat_type)
                 
                 # Lệnh dừng
-                elif message_text.lower() in ['.stop', '.dừng', 'stop', 'dừng']:
+                elif message_text.lower() in ['.thoát web', '.thoat web', '.stop', '.dừng']:
                     if user_id in user_commands:
                         # Gửi lệnh dừng
                         command_id = f"cmd_{int(time.time())}"
@@ -126,41 +120,32 @@ def line_webhook():
                             "type": "stop_automation", 
                             "timestamp": datetime.now().isoformat()
                         }
-                        send_line_message(chat_id, "🛑 Đã gửi lệnh DỪNG đến máy local", chat_type)
+                        send_line_message(chat_id, "🛑 Đã gửi lệnh thoát web", chat_type)
                     else:
                         send_line_message(chat_id, "❌ Không có automation nào đang chạy", chat_type)
                 
                 # Lệnh trạng thái
-                elif message_text.lower() in ['.status', '.trạngthái', 'status']:
+                elif message_text.lower() in ['.status', '.trangthai', 'status']:
                     if user_id in user_sessions:
                         username = user_sessions[user_id].get('username', 'N/A')
                         status = user_sessions[user_id].get('status', 'unknown')
-                        send_line_message(chat_id, f"📊 TRẠNG THÁI\n👤 User: {username}\n🔧 Status: {status}", chat_type)
+                        send_line_message(chat_id, f"📊 {username}: {status}", chat_type)
                     else:
-                        send_line_message(chat_id, "📊 Bạn chưa đăng nhập\n👉 Dùng: .login username:password", chat_type)
+                        send_line_message(chat_id, "📊 Chưa đăng nhập", chat_type)
                 
                 # Lệnh help
                 elif message_text.lower() in ['.help', 'help', 'hướng dẫn']:
-                    help_text = """🤖 TICKET AUTOMATION BOT
+                    help_text = """🤖 TICKET AUTOMATION
 
 📋 LỆNH:
-• .login username:password - Chạy automation
-• .stop - Dừng automation  
-• .status - Kiểm tra trạng thái
-• .help - Hướng dẫn này
-
-📝 VÍ DỤ:
-.login john_doe:123456
-
-🔧 CÁCH HOẠT ĐỘNG:
-1. Gửi lệnh .login từ LINE
-2. Server gửi lệnh đến máy local của bạn
-3. Local client tự động chạy Selenium
-4. Nhận kết quả real-time qua LINE"""
+.login username:password
+.thoát web
+.status
+.help"""
                     send_line_message(chat_id, help_text, chat_type)
             
             elif event_type == 'join':
-                welcome_msg = "🎉 Chào mừng! Tôi là Bot Ticket Automation\n👉 Gửi '.help' để xem hướng dẫn"
+                welcome_msg = "🎉 Bot Ticket Automation - .help để xem lệnh"
                 send_line_message(chat_id, welcome_msg, chat_type)
         
         return jsonify({"status": "success"})
@@ -267,10 +252,6 @@ def connect_local():
             user_sessions[user_id]['client_ip'] = client_ip
             user_sessions[user_id]['last_connect'] = datetime.now().isoformat()
             
-            # Thông báo cho user
-            username = user_sessions[user_id].get('username')
-            send_line_message(user_id, f"✅ MÁY LOCAL ĐÃ KẾT NỐI\n🖥️ IP: {client_ip}\n👤 User: {username}")
-            
             return jsonify({"status": "connected", "message": "Kết nối thành công"})
         else:
             return jsonify({"status": "error", "message": "User không tồn tại"})
@@ -338,13 +319,7 @@ def home():
     return jsonify({
         "service": "LINE Ticket Automation Server",
         "version": "2.0", 
-        "status": "running",
-        "server_url": SERVER_URL,
-        "endpoints": {
-            "webhook": "/webhook",
-            "health": "/health",
-            "api_docs": "Check code comments"
-        }
+        "status": "running"
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
