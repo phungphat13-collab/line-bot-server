@@ -101,7 +101,7 @@ def line_webhook():
                             "timestamp": datetime.now().isoformat()
                         }
                         
-                        # 🎯 THÔNG BÁO ĐƠN GIẢN - CHỈ 1 DÒNG
+                        # 🎯 CHỈ GỬI 1 THÔNG BÁO ĐƠN GIẢN
                         send_line_message(chat_id, f"✅ Đã nhận lệnh cho {username}", chat_type)
                         
                         # Log để debug
@@ -112,7 +112,8 @@ def line_webhook():
                 
                 # Lệnh dừng
                 elif message_text.lower() in ['.thoát web', '.thoat web', '.stop', '.dừng']:
-                    if user_id in user_commands:
+                    if user_id in user_sessions:
+                        username = user_sessions[user_id].get('username', 'user')
                         # Gửi lệnh dừng
                         command_id = f"cmd_{int(time.time())}"
                         user_commands[user_id] = {
@@ -120,7 +121,8 @@ def line_webhook():
                             "type": "stop_automation", 
                             "timestamp": datetime.now().isoformat()
                         }
-                        send_line_message(chat_id, "🛑 Đã gửi lệnh thoát web", chat_type)
+                        # 🎯 THÔNG BÁO USER ĐÃ THOÁT
+                        send_line_message(chat_id, f"🚪 {username} đã thoát web", chat_type)
                     else:
                         send_line_message(chat_id, "❌ Không có automation nào đang chạy", chat_type)
                 
@@ -154,6 +156,7 @@ def line_webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
+# ... (CÁC API KHÁC GIỮ NGUYÊN NHƯ TRƯỚC)
 @app.route('/api/register_local', methods=['POST'])
 def api_register_local():
     """API để local client đăng ký và nhận user_id"""
@@ -271,30 +274,6 @@ def api_send_message():
             send_line_message(user_id, message)
             return jsonify({"status": "sent"})
         return jsonify({"status": "error", "message": "Missing parameters"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/update_status', methods=['POST'])
-def update_status():
-    """API cập nhật trạng thái từ local client"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        status = data.get('status')
-        message = data.get('message', '')
-        
-        if user_id in user_sessions:
-            user_sessions[user_id]['status'] = status
-            user_sessions[user_id]['last_update'] = datetime.now().isoformat()
-            
-            # Gửi thông báo cho user
-            if message:
-                send_line_message(user_id, message)
-            
-            return jsonify({"status": "updated"})
-        else:
-            return jsonify({"status": "error", "message": "User không tồn tại"})
-            
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
