@@ -1,0 +1,8 @@
+{
+  "name": "line-bot-python",
+  "version": "1.0.0",
+  "description": "Line Bot Python Server",
+  "scripts": {
+    "start": "python app.py"
+  }
+}
