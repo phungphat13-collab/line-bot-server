@@ -228,6 +228,22 @@ def home():
         "status": "running"
     })
 
+@app.route('/api/send_message', methods=['POST'])
+def api_send_message():
+    """API để client gửi tin nhắn LINE"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        message = data.get('message')
+        line_token = data.get('line_token', LINE_CHANNEL_TOKEN)
+        
+        if user_id and message:
+            send_line_message(user_id, message)
+            return jsonify({"status": "sent"})
+        return jsonify({"status": "error", "message": "Missing parameters"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
     app.run(host='0.0.0.0', port=port, debug=False)
