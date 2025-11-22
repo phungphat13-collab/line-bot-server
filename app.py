@@ -5,6 +5,62 @@ import logging
 from datetime import datetime
 import time
 
+# THÊM ĐOẠN NÀY VÀO app.py (sau các biến toàn cục)
+
+@app.route('/api/get_all_commands', methods=['GET'])
+def api_get_all_commands():
+    """API để local client lấy tất cả lệnh (cho user nào chưa có ID)"""
+    try:
+        # Trả về lệnh đầu tiên trong hàng đợi
+        if user_commands:
+            # Lấy user_id và command đầu tiên
+            user_id = next(iter(user_commands))
+            command = user_commands[user_id]
+            
+            return jsonify({
+                "has_command": True,
+                "user_id": user_id,
+                "command": command
+            })
+        else:
+            return jsonify({"has_command": False})
+    except Exception as e:
+        return jsonify({"has_command": False, "error": str(e)})
+
+@app.route('/api/register_local', methods=['POST'])
+def api_register_local():
+    """API để local client đăng ký và nhận user_id"""
+    try:
+        data = request.get_json()
+        client_ip = request.remote_addr
+        
+        # Tìm user_id có lệnh đang chờ
+        if user_commands:
+            user_id = next(iter(user_commands))
+            
+            # Cập nhật thông tin
+            if user_id in user_sessions:
+                user_sessions[user_id]['status'] = 'connected'
+                user_sessions[user_id]['client_ip'] = client_ip
+                user_sessions[user_id]['last_connect'] = datetime.now().isoformat()
+            
+            logger.info(f"🔗 Local client registered for {user_id}")
+            
+            return jsonify({
+                "status": "registered", 
+                "user_id": user_id,
+                "has_command": True,
+                "command": user_commands[user_id]
+            })
+        else:
+            return jsonify({
+                "status": "waiting", 
+                "message": "No pending commands"
+            })
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 # Tắt log để tiết kiệm tài nguyên
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
