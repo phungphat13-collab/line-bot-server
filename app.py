@@ -10,60 +10,6 @@ logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ==================== 🎯 BIẾN TOÀN CỤC ====================
-@app.route('/api/get_all_commands', methods=['GET'])
-def api_get_all_commands():
-    """API để local client lấy tất cả lệnh (cho user nào chưa có ID)"""
-    try:
-        # Trả về lệnh đầu tiên trong hàng đợi
-        if user_commands:
-            # Lấy user_id và command đầu tiên
-            user_id = next(iter(user_commands))
-            command = user_commands[user_id]
-            
-            return jsonify({
-                "has_command": True,
-                "user_id": user_id,
-                "command": command
-            })
-        else:
-            return jsonify({"has_command": False})
-    except Exception as e:
-        return jsonify({"has_command": False, "error": str(e)})
-
-@app.route('/api/register_local', methods=['POST'])
-def api_register_local():
-    """API để local client đăng ký và nhận user_id"""
-    try:
-        data = request.get_json()
-        client_ip = request.remote_addr
-        
-        # Tìm user_id có lệnh đang chờ
-        if user_commands:
-            user_id = next(iter(user_commands))
-            
-            # Cập nhật thông tin
-            if user_id in user_sessions:
-                user_sessions[user_id]['status'] = 'connected'
-                user_sessions[user_id]['client_ip'] = client_ip
-                user_sessions[user_id]['last_connect'] = datetime.now().isoformat()
-            
-            logger.info(f"🔗 Local client registered for {user_id}")
-            
-            return jsonify({
-                "status": "registered", 
-                "user_id": user_id,
-                "has_command": True,
-                "command": user_commands[user_id]
-            })
-        else:
-            return jsonify({
-                "status": "waiting", 
-                "message": "No pending commands"
-            })
-            
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
 app = Flask(__name__)  # 🔥 QUAN TRỌNG: Khai báo app trước
 
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
