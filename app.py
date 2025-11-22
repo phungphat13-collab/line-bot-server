@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Cấu hình LINE
-LINE_CHANNEL_TOKEN = os.getenv('LINE_ACCESS_TOKEN', "yrazgly8JwQb7zaoAb13wck530QXpo7meQ+Fx0mILCbGJd2zAO8S5dhRNnKjsYn4nbGN/OHZlwrk1rFrO8FWXNzPQQ/dLVbftskrYvFoPBOHFbCRDVyM8WonW5anLpTz330+LfCrVdAdsZRgH3u1fgdB04t89/1O/w1cDnyilFU=")
+LINE_CHANNEL_TOKEN = os.getenv('LINE_ACCESS_TOKEN', "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU=")
 
 # Lưu trạng thái user
 user_sessions = {}
