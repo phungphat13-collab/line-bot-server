@@ -5,8 +5,11 @@ import logging
 from datetime import datetime
 import time
 
-# THÊM ĐOẠN NÀY VÀO app.py (sau các biến toàn cục)
+# ==================== 🔧 CẤU HÌNH ====================
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
+# ==================== 🎯 BIẾN TOÀN CỤC ====================
 @app.route('/api/get_all_commands', methods=['GET'])
 def api_get_all_commands():
     """API để local client lấy tất cả lệnh (cho user nào chưa có ID)"""
@@ -61,13 +64,8 @@ def api_register_local():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# Tắt log để tiết kiệm tài nguyên
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger(__name__)
+app = Flask(__name__)  # 🔥 QUAN TRỌNG: Khai báo app trước
 
-app = Flask(__name__)
-
-# Cấu hình LINE
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
@@ -76,6 +74,7 @@ user_sessions = {}
 user_commands = {}
 message_cooldown = {}
 
+# ==================== 🛠️ HÀM TIỆN ÍCH ====================
 def send_line_message(chat_id, text, chat_type="user"):
     """Gửi tin nhắn LINE - TỐI ƯU CHO RENDER"""
     try:
@@ -102,6 +101,8 @@ def send_line_message(chat_id, text, chat_type="user"):
     except Exception as e:
         logger.warning(f"Line message failed: {e}")
         return False
+
+# ==================== 🌐 API ENDPOINTS ====================
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
@@ -222,7 +223,91 @@ def line_webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-# API để local client kết nối
+@app.route('/api/register_local', methods=['POST'])
+def api_register_local():
+    """API để local client đăng ký và nhận user_id"""
+    try:
+        data = request.get_json()
+        client_ip = request.remote_addr
+        
+        # Tìm user_id có lệnh đang chờ
+        if user_commands:
+            user_id = next(iter(user_commands))
+            
+            # Cập nhật thông tin
+            if user_id in user_sessions:
+                user_sessions[user_id]['status'] = 'connected'
+                user_sessions[user_id]['client_ip'] = client_ip
+                user_sessions[user_id]['last_connect'] = datetime.now().isoformat()
+            
+            logger.info(f"🔗 Local client registered for {user_id}")
+            
+            return jsonify({
+                "status": "registered", 
+                "user_id": user_id,
+                "has_command": True,
+                "command": user_commands[user_id]
+            })
+        else:
+            return jsonify({
+                "status": "waiting", 
+                "message": "No pending commands"
+            })
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/get_all_commands', methods=['GET'])
+def api_get_all_commands():
+    """API để local client lấy tất cả lệnh (cho user nào chưa có ID)"""
+    try:
+        # Trả về lệnh đầu tiên trong hàng đợi
+        if user_commands:
+            # Lấy user_id và command đầu tiên
+            user_id = next(iter(user_commands))
+            command = user_commands[user_id]
+            
+            return jsonify({
+                "has_command": True,
+                "user_id": user_id,
+                "command": command
+            })
+        else:
+            return jsonify({"has_command": False})
+    except Exception as e:
+        return jsonify({"has_command": False, "error": str(e)})
+
+@app.route('/api/get_commands/<user_id>', methods=['GET'])
+def api_get_commands(user_id):
+    """API để local client lấy lệnh"""
+    try:
+        if user_id in user_commands:
+            command = user_commands[user_id]
+            return jsonify({
+                "has_command": True,
+                "command": command
+            })
+        else:
+            return jsonify({"has_command": False})
+    except Exception as e:
+        return jsonify({"has_command": False, "error": str(e)})
+
+@app.route('/api/complete_command', methods=['POST'])
+def api_complete_command():
+    """API đánh dấu lệnh đã hoàn thành"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        command_id = data.get('command_id')
+        
+        if user_id in user_commands and user_commands[user_id]["id"] == command_id:
+            del user_commands[user_id]
+            logger.info(f"✅ Completed command {command_id} for {user_id}")
+        
+        return jsonify({"status": "completed"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 @app.route('/api/connect_local', methods=['POST'])
 def connect_local():
     """API để local client kết nối"""
@@ -247,40 +332,6 @@ def connect_local():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# API để local client lấy lệnh
-@app.route('/api/get_commands/<user_id>', methods=['GET'])
-def api_get_commands(user_id):
-    """API để local client lấy lệnh"""
-    try:
-        if user_id in user_commands:
-            command = user_commands[user_id]
-            return jsonify({
-                "has_command": True,
-                "command": command
-            })
-        else:
-            return jsonify({"has_command": False})
-    except Exception as e:
-        return jsonify({"has_command": False, "error": str(e)})
-
-# API đánh dấu lệnh đã hoàn thành
-@app.route('/api/complete_command', methods=['POST'])
-def api_complete_command():
-    """API đánh dấu lệnh đã hoàn thành"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        command_id = data.get('command_id')
-        
-        if user_id in user_commands and user_commands[user_id]["id"] == command_id:
-            del user_commands[user_id]
-            logger.info(f"✅ Completed command {command_id} for {user_id}")
-        
-        return jsonify({"status": "completed"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-# API để local client gửi tin nhắn LINE
 @app.route('/api/send_message', methods=['POST'])
 def api_send_message():
     """API để client gửi tin nhắn LINE"""
@@ -296,7 +347,6 @@ def api_send_message():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# API cập nhật trạng thái từ local client
 @app.route('/api/update_status', methods=['POST'])
 def update_status():
     """API cập nhật trạng thái từ local client"""
@@ -321,7 +371,6 @@ def update_status():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# Health check endpoint
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -342,7 +391,7 @@ def home():
     """Trang chủ"""
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "2.0",
+        "version": "2.0", 
         "status": "running",
         "server_url": SERVER_URL,
         "endpoints": {
@@ -352,6 +401,7 @@ def home():
         }
     })
 
+# ==================== 🚀 CHẠY SERVER ====================
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
     print(f"🚀 Starting LINE Bot Server on port {port}")
