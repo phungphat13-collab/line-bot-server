@@ -1,23 +1,24 @@
-from flask import Flask, request, abort
+from flask import Flask, request, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
 # Cấu hình Line từ environment variables
-line_bot_api = LineBotApi(os.getenv('LINE_ACCESS_TOKEN', 'gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU='))
-handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET', 'YOUR_CHANNEL_SECRET'))
+line_bot_api = LineBotApi(os.getenv('LINE_ACCESS_TOKEN'))
+handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 
 # Route health check
 @app.route('/health', methods=['GET'])
 def health_check():
-    return {
+    return jsonify({
         'status': 'OK', 
         'message': 'Python Line Bot Server is running!',
-        'timestamp': '2024-01-01T00:00:00Z'  # Sẽ thay bằng datetime sau
-    }
+        'timestamp': datetime.now().isoformat()
+    })
 
 # Route chào mừng
 @app.route('/', methods=['GET'])
@@ -32,13 +33,12 @@ def webhook():
 
     # Get request body as text
     body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
 
     # Handle webhook body
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        abort(400)
+        return 'Invalid signature', 400
 
     return 'OK'
 
@@ -57,4 +57,4 @@ def handle_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port)
