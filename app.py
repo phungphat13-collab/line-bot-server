@@ -3,6 +3,7 @@ import requests
 import os
 import logging
 from datetime import datetime
+import time
 
 # Tắt log để tiết kiệm tài nguyên
 logging.basicConfig(level=logging.WARNING)
@@ -11,15 +12,25 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Cấu hình LINE
-LINE_CHANNEL_TOKEN = os.getenv('LINE_ACCESS_TOKEN', "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU=")
+LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
+SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
-# Lưu trạng thái user
+# Lưu trạng thái user và commands
 user_sessions = {}
-group_queues = {}
+user_commands = {}
+message_cooldown = {}
 
 def send_line_message(chat_id, text, chat_type="user"):
     """Gửi tin nhắn LINE - TỐI ƯU CHO RENDER"""
     try:
+        # Kiểm tra cooldown
+        key = f"{chat_id}_{text[:20]}"
+        current_time = time.time()
+        if key in message_cooldown and current_time - message_cooldown[key] < 5:
+            return False
+            
+        message_cooldown[key] = current_time
+        
         url = 'https://api.line.me/v2/bot/message/push'
         headers = {
             'Content-Type': 'application/json',
@@ -38,7 +49,7 @@ def send_line_message(chat_id, text, chat_type="user"):
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
-    """Webhook nhận lệnh từ LINE - CHỈ QUẢN LÝ LỆNH"""
+    """Webhook nhận lệnh từ LINE"""
     try:
         data = request.get_json()
         events = data.get('events', [])
@@ -60,79 +71,93 @@ def line_webhook():
                 chat_id = room_id
             
             if event_type == 'message':
-                message_text = event.get('message', {}).get('text', '').strip().lower()
+                message_text = event.get('message', {}).get('text', '').strip()
                 
-                # Xử lý lệnh đơn giản
-                if message_text in ['/help', 'help', 'hướng dẫn']:
-                    help_text = """🤖 TICKET AUTOMATION BOT
-
-📋 LỆNH CƠ BẢN:
-• login username:password - Kết nối và chạy auto
-• status - Kiểm tra trạng thái
-• stop - Dừng automation
-• help - Hướng dẫn này
-
-🔧 CÁCH DÙNG:
-1. Gửi 'login username:password'
-2. Bot sẽ hướng dẫn kết nối máy local
-3. Chạy script trên máy bạn
-
-💡 Lưu ý: Cần chạy script local để auto ticket"""
-                    send_line_message(chat_id, help_text, chat_type)
-                
-                elif message_text.startswith('login '):
-                    credentials = message_text[6:]
+                # Xử lý lệnh .login
+                if message_text.startswith('.login '):
+                    credentials = message_text[7:]  # Bỏ ".login "
                     if ':' in credentials:
                         username, password = credentials.split(':', 1)
+                        
                         # Lưu thông tin user
                         user_sessions[user_id] = {
                             'username': username,
                             'password': password,
                             'group_id': group_id,
                             'room_id': room_id,
-                            'status': 'waiting_local'
+                            'status': 'waiting_command'
                         }
                         
-                        response_msg = f"""✅ Đã lưu thông tin: {username}
+                        # GỬI LỆNH XUỐNG LOCAL CLIENT
+                        command_id = f"cmd_{int(time.time())}"
+                        user_commands[user_id] = {
+                            "id": command_id,
+                            "type": "start_automation",
+                            "username": username,
+                            "password": password,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        
+                        response_msg = f"""✅ ĐÃ NHẬN LỆNH TỪ LINE
 
-📝 HƯỚNG DẪN KẾT NỐI LOCAL:
+👤 Username: {username}
+🔐 Đã lưu thông tin đăng nhập
+📨 Đang gửi lệnh đến máy local...
 
-Bước 1: Tải script local từ:
-https://github.com/your-repo/ticket-automation
-
-Bước 2: Chạy script trên máy bạn:
-python local_client.py {user_id} {username}
-
-Bước 3: Script sẽ tự động kết nối và chạy
-
-🔒 Bảo mật: Password được mã hóa"""
+🖥️ Local client sẽ tự động chạy automation!"""
                         send_line_message(chat_id, response_msg, chat_type)
                         
-                        # Thông báo trong group
-                        if group_id:
-                            send_line_message(group_id, f"🔄 {username} đang thiết lập kết nối local...", "group")
-                    
+                        # Log để debug
+                        logger.info(f"📨 Sent command to {user_id}: start_automation for {username}")
+                        
                     else:
-                        send_line_message(chat_id, "❌ Sai cú pháp! Dùng: login username:password", chat_type)
+                        send_line_message(chat_id, "❌ SAI CÚ PHÁP!\n👉 Dùng: .login username:password\n📝 Ví dụ: .login john_doe:123456", chat_type)
                 
-                elif message_text in ['status', 'trạng thái']:
+                # Lệnh dừng
+                elif message_text.lower() in ['.stop', '.dừng', 'stop', 'dừng']:
+                    if user_id in user_commands:
+                        # Gửi lệnh dừng
+                        command_id = f"cmd_{int(time.time())}"
+                        user_commands[user_id] = {
+                            "id": command_id,
+                            "type": "stop_automation", 
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        send_line_message(chat_id, "🛑 Đã gửi lệnh DỪNG đến máy local", chat_type)
+                    else:
+                        send_line_message(chat_id, "❌ Không có automation nào đang chạy", chat_type)
+                
+                # Lệnh trạng thái
+                elif message_text.lower() in ['.status', '.trạngthái', 'status']:
                     if user_id in user_sessions:
-                        status = user_sessions[user_id].get('status', 'unknown')
                         username = user_sessions[user_id].get('username', 'N/A')
-                        response_msg = f"📊 Trạng thái {username}: {status}"
+                        status = user_sessions[user_id].get('status', 'unknown')
+                        send_line_message(chat_id, f"📊 TRẠNG THÁI\n👤 User: {username}\n🔧 Status: {status}", chat_type)
                     else:
-                        response_msg = "📊 Bạn chưa đăng nhập. Gửi 'login username:password'"
-                    send_line_message(chat_id, response_msg, chat_type)
+                        send_line_message(chat_id, "📊 Bạn chưa đăng nhập\n👉 Dùng: .login username:password", chat_type)
                 
-                elif message_text in ['stop', 'dừng', 'thoát']:
-                    if user_id in user_sessions:
-                        user_sessions[user_id]['status'] = 'stopped'
-                        send_line_message(chat_id, "🛑 Đã gửi lệnh dừng automation", chat_type)
-                    else:
-                        send_line_message(chat_id, "❌ Không tìm thấy session đang chạy", chat_type)
+                # Lệnh help
+                elif message_text.lower() in ['.help', 'help', 'hướng dẫn']:
+                    help_text = """🤖 TICKET AUTOMATION BOT
+
+📋 LỆNH:
+• .login username:password - Chạy automation
+• .stop - Dừng automation  
+• .status - Kiểm tra trạng thái
+• .help - Hướng dẫn này
+
+📝 VÍ DỤ:
+.login john_doe:123456
+
+🔧 CÁCH HOẠT ĐỘNG:
+1. Gửi lệnh .login từ LINE
+2. Server gửi lệnh đến máy local của bạn
+3. Local client tự động chạy Selenium
+4. Nhận kết quả real-time qua LINE"""
+                    send_line_message(chat_id, help_text, chat_type)
             
             elif event_type == 'join':
-                welcome_msg = "🎉 Chào mừng! Tôi là Bot Ticket Automation. Gửi 'help' để xem hướng dẫn."
+                welcome_msg = "🎉 Chào mừng! Tôi là Bot Ticket Automation\n👉 Gửi '.help' để xem hướng dẫn"
                 send_line_message(chat_id, welcome_msg, chat_type)
         
         return jsonify({"status": "success"})
@@ -141,6 +166,7 @@ Bước 3: Script sẽ tự động kết nối và chạy
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
+# API để local client kết nối
 @app.route('/api/connect_local', methods=['POST'])
 def connect_local():
     """API để local client kết nối"""
@@ -156,7 +182,7 @@ def connect_local():
             
             # Thông báo cho user
             username = user_sessions[user_id].get('username')
-            send_line_message(user_id, f"✅ Đã kết nối với máy local\nIP: {client_ip}\nUser: {username}")
+            send_line_message(user_id, f"✅ MÁY LOCAL ĐÃ KẾT NỐI\n🖥️ IP: {client_ip}\n👤 User: {username}")
             
             return jsonify({"status": "connected", "message": "Kết nối thành công"})
         else:
@@ -165,6 +191,56 @@ def connect_local():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
+# API để local client lấy lệnh
+@app.route('/api/get_commands/<user_id>', methods=['GET'])
+def api_get_commands(user_id):
+    """API để local client lấy lệnh"""
+    try:
+        if user_id in user_commands:
+            command = user_commands[user_id]
+            return jsonify({
+                "has_command": True,
+                "command": command
+            })
+        else:
+            return jsonify({"has_command": False})
+    except Exception as e:
+        return jsonify({"has_command": False, "error": str(e)})
+
+# API đánh dấu lệnh đã hoàn thành
+@app.route('/api/complete_command', methods=['POST'])
+def api_complete_command():
+    """API đánh dấu lệnh đã hoàn thành"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        command_id = data.get('command_id')
+        
+        if user_id in user_commands and user_commands[user_id]["id"] == command_id:
+            del user_commands[user_id]
+            logger.info(f"✅ Completed command {command_id} for {user_id}")
+        
+        return jsonify({"status": "completed"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+# API để local client gửi tin nhắn LINE
+@app.route('/api/send_message', methods=['POST'])
+def api_send_message():
+    """API để client gửi tin nhắn LINE"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        message = data.get('message')
+        
+        if user_id and message:
+            send_line_message(user_id, message)
+            return jsonify({"status": "sent"})
+        return jsonify({"status": "error", "message": "Missing parameters"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+# API cập nhật trạng thái từ local client
 @app.route('/api/update_status', methods=['POST'])
 def update_status():
     """API cập nhật trạng thái từ local client"""
@@ -189,32 +265,18 @@ def update_status():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/get_credentials', methods=['GET'])
-def get_credentials():
-    """API lấy thông tin đăng nhập (bảo mật)"""
-    try:
-        user_id = request.args.get('user_id')
-        
-        if user_id in user_sessions:
-            # Trả về thông tin cần thiết (không trả password trực tiếp)
-            return jsonify({
-                "status": "success",
-                "username": user_sessions[user_id].get('username'),
-                "user_id": user_id
-            })
-        else:
-            return jsonify({"status": "error", "message": "User không tồn tại"})
-            
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
+# Health check endpoint
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
     active_users = len([u for u in user_sessions.values() if u.get('status') == 'connected'])
+    pending_commands = len(user_commands)
+    
     return jsonify({
         "status": "healthy",
+        "server_url": SERVER_URL,
         "active_users": active_users,
+        "pending_commands": pending_commands,
         "total_sessions": len(user_sessions),
         "timestamp": datetime.now().isoformat()
     })
@@ -223,27 +285,19 @@ def health():
 def home():
     """Trang chủ"""
     return jsonify({
-        "service": "Ticket Automation API Server",
-        "version": "1.0",
-        "status": "running"
+        "service": "LINE Ticket Automation Server",
+        "version": "2.0",
+        "status": "running",
+        "server_url": SERVER_URL,
+        "endpoints": {
+            "webhook": "/webhook",
+            "health": "/health",
+            "api_docs": "Check code comments"
+        }
     })
-
-@app.route('/api/send_message', methods=['POST'])
-def api_send_message():
-    """API để client gửi tin nhắn LINE"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        message = data.get('message')
-        line_token = data.get('line_token', LINE_CHANNEL_TOKEN)
-        
-        if user_id and message:
-            send_line_message(user_id, message)
-            return jsonify({"status": "sent"})
-        return jsonify({"status": "error", "message": "Missing parameters"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
+    print(f"🚀 Starting LINE Bot Server on port {port}")
+    print(f"🌐 Server URL: {SERVER_URL}")
     app.run(host='0.0.0.0', port=port, debug=False)
