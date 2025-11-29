@@ -4,6 +4,7 @@ import os
 import logging
 from datetime import datetime
 import time
+import threading
 
 # ==================== 🔧 CẤU HÌNH ====================
 logging.basicConfig(level=logging.WARNING)
@@ -19,6 +20,22 @@ SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 user_sessions = {}
 user_commands = {}
 message_cooldown = {}
+
+# ==================== 🛡️ CHỐNG SLEEP RENDER ====================
+def keep_render_awake():
+    """Tự động gọi health endpoint mỗi 5 phút để chống sleep"""
+    while True:
+        try:
+            response = requests.get(f"{SERVER_URL}/health", timeout=10)
+            print(f"✅ Keep-alive: {response.status_code} at {datetime.now().strftime('%H:%M:%S')}")
+        except Exception as e:
+            print(f"⚠️ Keep-alive warning: {e}")
+        time.sleep(300)  # Chờ 5 phút
+
+# Start keep-alive thread
+keep_alive_thread = threading.Thread(target=keep_render_awake, daemon=True)
+keep_alive_thread.start()
+print("🛡️ Render keep-alive activated - Server will never sleep!")
 
 # ==================== 🛠️ HÀM TIỆN ÍCH ====================
 def send_line_message(chat_id, text, chat_type="user"):
@@ -156,7 +173,6 @@ def line_webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-# ... (CÁC API KHÁC GIỮ NGUYÊN NHƯ TRƯỚC)
 @app.route('/api/register_local', methods=['POST'])
 def api_register_local():
     """API để local client đăng ký và nhận user_id"""
@@ -298,7 +314,8 @@ def home():
     return jsonify({
         "service": "LINE Ticket Automation Server",
         "version": "2.0", 
-        "status": "running"
+        "status": "running",
+        "keep_alive": "active - will never sleep on Render"
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
@@ -306,4 +323,6 @@ if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
     print(f"🚀 Starting LINE Bot Server on port {port}")
     print(f"🌐 Server URL: {SERVER_URL}")
+    print(f"🛡️ Keep-alive protection: ENABLED")
+    print(f"⏰ Auto-ping every 5 minutes to prevent sleep")
     app.run(host='0.0.0.0', port=port, debug=False)
