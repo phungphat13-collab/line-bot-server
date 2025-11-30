@@ -1,4 +1,4 @@
-# app.py (SERVER - đã thêm session management)
+# app.py (SERVER - ĐÃ SỬA LỖI SYNTAX)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -319,7 +319,7 @@ def line_webhook():
 • Chỉ 1 user được active
 • User thường: báo "đang sử dụng tools"
 • User muốn dùng khi admin active: báo "muốn xài tool"
-• Admin khác: báo "admin đang sử dụng tool""""
+• Admin khác: báo "admin đang sử dụng tool"""
                     send_line_message(user_id, help_text)
                 
                 elif message_text in ['.ok', '.khong']:
@@ -524,7 +524,7 @@ def api_get_commands(user_id):
 
 @app.route('/api/complete_command', methods=['POST'])
 def api_complete_command():
-    """API đánh dấu lệnh đã hoàn thành"""
+    """API đánah dấu lệnh đã hoàn thành"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
