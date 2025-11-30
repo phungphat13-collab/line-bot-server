@@ -304,23 +304,15 @@ def line_webhook():
                     # LỆNH .help
                     help_text = """🤖 TICKET AUTOMATION
 
-📋 LỆNH TRONG NHÓM:
+📋 HƯỚNG DẪN:
 .login username:password - Đăng nhập
 .thoát web - Dừng automation  
 .status - Trạng thái hệ thống
 .help - Hướng dẫn sử dụng
 
-🔔 XÁC NHẬN ADMIN:
-.ok - Đồng ý thoát
-.khong - Tiếp tục sử dụng
-
-🎯 PHÂN QUYỀN:
-• Máy nào cũng có thể login khi hệ thống trống
-• User thường: KHÔNG GIỚI HẠN số lần login
-• Admin: không giới hạn login
-• Chỉ 1 user được active tại thời điểm
-
-💡 Lưu ý: Tất cả lệnh chỉ hoạt động trong nhóm này"""
+🎯 LƯU Ý:
+• Chỉ 1 user được active tại thời điểm"""
+                    
                     send_line_message(target_id, help_text)
                 
                 elif message_text in ['.ok', '.khong']:
