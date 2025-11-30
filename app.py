@@ -1,4 +1,4 @@
-# app.py (SERVER - ĐÃ SỬA LỖI SYNTAX)
+# app.py (SERVER - PHÂN QUYỀN ĐÃ SỬA)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -20,6 +20,9 @@ SESSION_TIMEOUT = 3600  # 1 giờ
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
+# ID nhóm LINE để nhận thông báo
+LINE_GROUP_ID = "https://line.me/ti/g/ZpXWbVLYaj"  # 👈 THAY BẰNG ID NHÓM THẬT
+
 # Dùng dict đơn giản, tự động dọn dẹp
 user_sessions = {}
 user_commands = {}
@@ -27,6 +30,7 @@ message_cooldown = {}
 pending_confirmations = {}  # Lưu trạng thái chờ xác nhận từ admin
 admin_responses = {}        # Lưu phản hồi từ admin
 active_sessions = {}        # Lưu session đang active
+login_attempts = {}         # Theo dõi số lần login của user thường
 
 # ==================== 🧹 MEMORY CLEANUP ====================
 def cleanup_old_sessions():
@@ -51,6 +55,8 @@ def cleanup_old_sessions():
                 del admin_responses[user_id]
             if user_id in active_sessions:
                 del active_sessions[user_id]
+            if user_id in login_attempts:
+                del login_attempts[user_id]
                 
         # Dọn cooldown cũ
         current_time = time.time()
@@ -103,10 +109,10 @@ print("🛡️ Optimized keep-alive started")
 
 # ==================== 🛠️ HÀM TIỆN ÍCH TỐI ƯU ====================
 def send_line_message(chat_id, text, chat_type="user"):
-    """Gửi tin nhắn LINE - TỐI ƯU MEMORY"""
+    """Gửi tin nhắn LINE - HỖ TRỢ CẢ USER VÀ NHÓM"""
     try:
-        # Cập nhật last activity
-        if chat_id in user_sessions:
+        # Cập nhật last activity nếu là user
+        if chat_type == "user" and chat_id in user_sessions:
             user_sessions[chat_id]['last_activity'] = time.time()
         
         # Kiểm tra cooldown
@@ -131,6 +137,18 @@ def send_line_message(chat_id, text, chat_type="user"):
         return response.status_code == 200
     except Exception as e:
         logger.warning(f"Line message failed: {e}")
+        return False
+
+def send_to_group(text):
+    """Gửi tin nhắn đến nhóm LINE"""
+    try:
+        if LINE_GROUP_ID:
+            return send_line_message(LINE_GROUP_ID, text, "group")
+        else:
+            print("⚠️ Chưa cấu hình LINE_GROUP_ID - Chỉ gửi tin nhắn cá nhân")
+            return False
+    except Exception as e:
+        logger.error(f"Send to group error: {e}")
         return False
 
 def send_confirmation_message(admin_id, shift_name, message, options):
@@ -169,11 +187,53 @@ def get_active_session_info():
     else:
         return {'has_active_session': False}
 
+def is_admin_user(username):
+    """Kiểm tra user có phải admin không"""
+    return username in ["27838", "167802"]
+
+def can_user_login(user_id, username):
+    """Kiểm tra user có thể login không - RULE MỚI"""
+    # Admin luôn được login
+    if is_admin_user(username):
+        return True, "admin_override"
+    
+    # User thường: kiểm tra số lần login
+    current_time = time.time()
+    
+    # Khởi tạo hoặc làm mới thông tin login attempts
+    if user_id not in login_attempts:
+        login_attempts[user_id] = {
+            'count': 0,
+            'last_login': 0,
+            'cooldown_until': 0
+        }
+    
+    user_attempts = login_attempts[user_id]
+    
+    # Kiểm tra cooldown
+    if current_time < user_attempts['cooldown_until']:
+        remaining = int((user_attempts['cooldown_until'] - current_time) / 60)
+        return False, f"cooldown_{remaining}"
+    
+    # Reset counter nếu đã qua 1 giờ từ lần login cuối
+    if current_time - user_attempts['last_login'] > 3600:
+        user_attempts['count'] = 0
+    
+    # Kiểm tra số lần login
+    if user_attempts['count'] >= 3:  # Tối đa 3 lần login trong 1 giờ
+        user_attempts['cooldown_until'] = current_time + 1800  # Cooldown 30 phút
+        return False, "max_attempts"
+    
+    # Cho phép login
+    user_attempts['count'] += 1
+    user_attempts['last_login'] = current_time
+    return True, "allowed"
+
 # ==================== 🌐 API ENDPOINTS TỐI ƯU ====================
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
-    """Webhook nhận lệnh từ LINE - TỐI ƯU"""
+    """Webhook nhận lệnh từ LINE - PHÂN QUYỀN ĐÃ SỬA"""
     try:
         data = request.get_json()
         events = data.get('events', [])
@@ -182,19 +242,24 @@ def line_webhook():
             event_type = event.get('type')
             source = event.get('source', {})
             user_id = source.get('userId')
+            group_id = source.get('groupId')
             
-            if not user_id:
+            # Xác định đây là tin nhắn từ nhóm hay cá nhân
+            is_group_message = group_id is not None
+            target_id = group_id if is_group_message else user_id
+            
+            if not target_id:
                 continue
                 
-            # Cập nhật thời gian hoạt động
-            if user_id in user_sessions:
+            # Cập nhật thời gian hoạt động (chỉ cho user cá nhân)
+            if not is_group_message and user_id in user_sessions:
                 user_sessions[user_id]['last_activity'] = time.time()
             
             if event_type == 'message':
                 message_text = event.get('message', {}).get('text', '').strip().lower()
                 
-                # XỬ LÝ PHẢN HỒI XÁC NHẬN TỪ ADMIN
-                if user_id in pending_confirmations:
+                # XỬ LÝ PHẢN HỒI XÁC NHẬN TỪ ADMIN (chỉ xử lý từ cá nhân)
+                if not is_group_message and user_id in pending_confirmations:
                     if message_text in ['.ok', '.khong']:
                         # Lưu phản hồi từ admin
                         admin_responses[user_id] = message_text
@@ -202,49 +267,50 @@ def line_webhook():
                         
                         if message_text == '.ok':
                             send_line_message(user_id, "✅ Đã xác nhận thoát. Hệ thống sẽ tự động đóng web.")
+                            send_to_group(f"🔔 Admin {user_sessions.get(user_id, {}).get('username', 'Unknown')} đã xác nhận thoát hệ thống.")
                         else:
                             send_line_message(user_id, "🔄 Tiếp tục sử dụng. Hệ thống sẽ hỏi lại sau 1 giờ.")
+                            send_to_group(f"🔄 Admin {user_sessions.get(user_id, {}).get('username', 'Unknown')} từ chối thoát - Tiếp tục sử dụng")
                         
                         continue  # Không xử lý tiếp
                 
-                # XỬ LÝ LỆNH THÔNG THƯỜNG
-                if message_text.startswith('.login '):
+                # XỬ LÝ LỆNH THÔNG THƯỜNG (chỉ xử lý từ cá nhân)
+                if not is_group_message and message_text.startswith('.login '):
                     credentials = message_text[7:]
                     if ':' in credentials:
                         username, password = credentials.split(':', 1)
                         
-                        # KIỂM TRA SESSION CONFLICT
+                        # KIỂM TRA PHÂN QUYỀN MỚI - RULE ĐÃ SỬA
+                        can_login, reason = can_user_login(user_id, username)
+                        
+                        if not can_login:
+                            if reason.startswith("cooldown_"):
+                                remaining = reason.split("_")[1]
+                                send_line_message(user_id, f"⏳ Bạn đã login quá nhiều lần. Vui lòng chờ {remaining} phút nữa.")
+                            elif reason == "max_attempts":
+                                send_line_message(user_id, "🚫 Bạn đã login 3 lần trong 1 giờ. Vui lòng chờ 30 phút.")
+                            continue
+                        
+                        # KIỂM TRA SESSION CONFLICT - RULE MỚI
                         active_session = get_active_session_info()
                         if active_session['has_active_session']:
                             active_user = active_session['active_user']
                             active_user_type = active_session['user_type']
-                            current_user_type = "admin" if username in ["27838", "167802"] else "user"
+                            current_user_type = "admin" if is_admin_user(username) else "user"
                             
-                            # Rule 1: User thường đang dùng -> báo "username đang sử dụng tools"
-                            if active_user_type == "user":
-                                send_line_message(user_id, f"⚠️ {active_user} đang sử dụng tools")
-                                continue
-                            
-                            # Rule 2: Admin đang dùng, user thường muốn dùng -> báo "username muốn xài tool"
-                            elif active_user_type == "admin" and current_user_type == "user":
-                                send_line_message(user_id, f"⚠️ {username} muốn xài tool")
-                                # Gửi thông báo cho admin đang dùng
-                                for admin_id, session in active_sessions.items():
-                                    if session.get('user_type') == 'admin':
-                                        send_line_message(admin_id, f"⚠️ {username} muốn xài tool")
-                                continue
-                            
-                            # Rule 3: Admin đang dùng, admin khác muốn dùng -> báo "admin username đang sử dụng tool"
-                            elif active_user_type == "admin" and current_user_type == "admin":
-                                send_line_message(user_id, f"⚠️ Admin {active_user} đang sử dụng tool")
+                            # RULE MỚI: Chỉ chặn khi có user khác đang active
+                            if active_user != username:
+                                send_line_message(user_id, f"⚠️ {active_user} đang sử dụng tools. Vui lòng chờ.")
+                                send_to_group(f"⚠️ {username} muốn login nhưng {active_user} đang sử dụng tools")
                                 continue
                         
+                        # CHO PHÉP LOGIN
                         user_sessions[user_id] = {
                             'username': username,
                             'password': password,
                             'status': 'waiting_command',
                             'last_activity': time.time(),
-                            'user_type': "admin" if username in ["27838", "167802"] else "user"
+                            'user_type': "admin" if is_admin_user(username) else "user"
                         }
                         
                         command_id = f"cmd_{int(time.time())}"
@@ -257,12 +323,13 @@ def line_webhook():
                         }
                         
                         send_line_message(user_id, f"✅ Đã nhận lệnh cho {username}")
+                        send_to_group(f"🎯 {username} đã đăng nhập vào hệ thống automation")
                         logger.info(f"📨 Sent command to {user_id}")
                         
                     else:
                         send_line_message(user_id, "❌ Sai cú pháp! Dùng: .login username:password")
                 
-                elif message_text in ['.thoát web', '.thoat web', '.stop', '.dừng', '.exit']:
+                elif not is_group_message and message_text in ['.thoát web', '.thoat web', '.stop', '.dừng', '.exit']:
                     if user_id in user_sessions:
                         username = user_sessions[user_id].get('username', 'user')
                         command_id = f"cmd_{int(time.time())}"
@@ -275,11 +342,12 @@ def line_webhook():
                         if user_id in active_sessions:
                             del active_sessions[user_id]
                         send_line_message(user_id, f"🚪 {username} đã thoát web")
+                        send_to_group(f"🚪 {username} đã thoát khỏi hệ thống automation")
                     else:
                         send_line_message(user_id, "❌ Không có automation nào đang chạy")
                 
                 elif message_text in ['.status', '.trangthai', 'status']:
-                    if user_id in user_sessions:
+                    if not is_group_message and user_id in user_sessions:
                         username = user_sessions[user_id].get('username', 'N/A')
                         status = user_sessions[user_id].get('status', 'unknown')
                         
@@ -300,7 +368,15 @@ def line_webhook():
                         
                         send_line_message(user_id, f"📊 {username}: {status}{confirmation_status}{session_info}")
                     else:
-                        send_line_message(user_id, "📊 Chưa đăng nhập")
+                        if is_group_message:
+                            # Trả lời trạng thái trong nhóm
+                            active_session = get_active_session_info()
+                            if active_session['has_active_session']:
+                                send_line_message(target_id, f"📊 Hệ thống đang chạy - User active: {active_session['active_user']} ({active_session['user_type']})")
+                            else:
+                                send_line_message(target_id, "📊 Hệ thống đang rảnh - Không có user nào active")
+                        else:
+                            send_line_message(user_id, "📊 Chưa đăng nhập")
                 
                 elif message_text in ['.help', 'help', 'hướng dẫn', '.huongdan']:
                     help_text = """🤖 TICKET AUTOMATION
@@ -315,20 +391,23 @@ def line_webhook():
 .ok - Đồng ý thoát
 .khong - Tiếp tục sử dụng
 
-🎯 SESSION RULES:
-• Chỉ 1 user được active
-• User thường: báo "đang sử dụng tools"
-• User muốn dùng khi admin active: báo "muốn xài tool"
-• Admin khác: báo "admin đang sử dụng tool"""
-                    send_line_message(user_id, help_text)
+🎯 PHÂN QUYỀN MỚI:
+• Máy nào cũng có thể login khi hệ thống trống
+• User thường: tối đa 3 lần login/giờ
+• Admin: không giới hạn login
+• Chỉ 1 user được active tại thời điểm"""
+                    send_line_message(target_id, help_text)
                 
-                elif message_text in ['.ok', '.khong']:
+                elif not is_group_message and message_text in ['.ok', '.khong']:
                     # Nếu không có pending confirmation, thông báo lỗi
                     if user_id not in pending_confirmations:
                         send_line_message(user_id, "❌ Không có yêu cầu xác nhận nào đang chờ")
             
             elif event_type == 'join':
-                send_line_message(user_id, "🎉 Bot Ticket Automation - .help để xem lệnh")
+                if is_group_message:
+                    send_line_message(target_id, "🎉 Bot Ticket Automation đã tham gia nhóm! Gõ .help để xem lệnh")
+                else:
+                    send_line_message(target_id, "🎉 Bot Ticket Automation - .help để xem lệnh")
         
         return jsonify({"status": "success"})
         
@@ -352,6 +431,7 @@ def api_send_confirmation():
             return jsonify({"status": "error", "message": "Thiếu tham số"})
         
         if send_confirmation_message(admin_id, shift_name, message, options):
+            send_to_group(f"⏳ Đang chờ xác nhận thoát từ {shift_name}")
             return jsonify({
                 "status": "success", 
                 "message": "Đã gửi xác nhận"
@@ -417,6 +497,10 @@ def api_register_session():
             'last_activity': time.time()
         }
         
+        # Gửi thông báo đến nhóm
+        user_type = "Admin" if is_admin else "User"
+        send_to_group(f"🎯 {user_type} {username} đã bắt đầu session automation")
+        
         logger.info(f"🎯 Registered session for {username} ({'admin' if is_admin else 'user'})")
         
         return jsonify({
@@ -443,10 +527,44 @@ def api_clear_session(user_id):
         if user_id in active_sessions:
             username = active_sessions[user_id].get('username', 'Unknown')
             del active_sessions[user_id]
+            # Gửi thông báo đến nhóm
+            send_to_group(f"🗑️ Session của {username} đã được xóa")
             logger.info(f"🗑️ Cleared session for {username}")
             return jsonify({"status": "cleared", "message": f"Đã xóa session của {username}"})
         else:
             return jsonify({"status": "not_found", "message": "Không tìm thấy session"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+# ==================== 📢 API GỬI TIN NHẮN NHÓM ====================
+
+@app.route('/api/send_to_group', methods=['POST'])
+def api_send_to_group():
+    """API để client gửi tin nhắn đến nhóm LINE"""
+    try:
+        data = request.get_json()
+        message = data.get('message')
+        
+        if message:
+            success = send_to_group(message)
+            return jsonify({"status": "sent" if success else "error"})
+        return jsonify({"status": "error", "message": "Thiếu nội dung tin nhắn"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/send_message', methods=['POST'])
+def api_send_message():
+    """API để client gửi tin nhắn LINE (cá nhân hoặc nhóm)"""
+    try:
+        data = request.get_json()
+        target_id = data.get('target_id')  # Có thể là user_id hoặc group_id
+        message = data.get('message')
+        chat_type = data.get('chat_type', 'user')  # 'user' hoặc 'group'
+        
+        if target_id and message:
+            success = send_line_message(target_id, message, chat_type)
+            return jsonify({"status": "sent" if success else "error"})
+        return jsonify({"status": "error", "message": "Missing parameters"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -524,7 +642,7 @@ def api_get_commands(user_id):
 
 @app.route('/api/complete_command', methods=['POST'])
 def api_complete_command():
-    """API đánah dấu lệnh đã hoàn thành"""
+    """API đánh dấu lệnh đã hoàn thành"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
@@ -559,21 +677,6 @@ def connect_local():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/send_message', methods=['POST'])
-def api_send_message():
-    """API để client gửi tin nhắn LINE"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        message = data.get('message')
-        
-        if user_id and message:
-            send_line_message(user_id, message)
-            return jsonify({"status": "sent"})
-        return jsonify({"status": "error", "message": "Missing parameters"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
 # ==================== 📊 HEALTH & MONITORING ====================
 
 @app.route('/health', methods=['GET'])
@@ -585,14 +688,17 @@ def health():
     pending_commands = len(user_commands)
     pending_confirmations_count = len(pending_confirmations)
     active_sessions_count = len(active_sessions)
+    login_attempts_count = len(login_attempts)
     
     return jsonify({
         "status": "healthy",
         "memory_optimized": True,
+        "group_support": True,
         "active_users": active_users,
         "pending_commands": pending_commands,
         "pending_confirmations": pending_confirmations_count,
         "active_sessions": active_sessions_count,
+        "login_attempts": login_attempts_count,
         "total_sessions": len(user_sessions),
         "timestamp": datetime.now().isoformat()
     })
@@ -604,20 +710,24 @@ def admin_status():
     
     status_info = {
         "server": "LINE Ticket Automation Server",
-        "version": "2.2 - Session Management",
+        "version": "3.0 - Phân Quyền Mới",
         "admin_features": "ENABLED",
         "session_management": "ENABLED",
+        "group_support": "ENABLED",
+        "line_group_id": LINE_GROUP_ID[:8] + "..." if LINE_GROUP_ID else "NOT_CONFIGURED",
         "timestamp": datetime.now().isoformat(),
         "statistics": {
             "total_sessions": len(user_sessions),
             "active_commands": len(user_commands),
             "pending_confirmations": len(pending_confirmations),
             "waiting_responses": len(admin_responses),
-            "active_sessions": len(active_sessions)
+            "active_sessions": len(active_sessions),
+            "login_attempts": len(login_attempts)
         },
         "active_users": [],
         "active_sessions_list": [],
-        "pending_confirmations_list": []
+        "pending_confirmations_list": [],
+        "login_attempts_list": []
     }
     
     # Thông tin user đang hoạt động
@@ -650,6 +760,15 @@ def admin_status():
             "message_preview": confirmation.get('message', '')[:50] + "..."
         })
     
+    # Thông tin login attempts
+    for user_id, attempts in login_attempts.items():
+        status_info["login_attempts_list"].append({
+            "user_id": user_id[:8] + "...",
+            "count": attempts.get('count', 0),
+            "last_login": attempts.get('last_login', 0),
+            "cooldown_until": attempts.get('cooldown_until', 0)
+        })
+    
     return jsonify(status_info)
 
 @app.route('/', methods=['GET'])
@@ -657,38 +776,48 @@ def home():
     """Trang chủ"""
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "2.2 - Session Management", 
+        "version": "3.0 - Phân Quyền Mới", 
         "status": "running",
         "features": [
             "Auto ticket processing",
             "Shift management", 
             "Admin confirmation system",
             "Session management",
+            "LINE Group support",
             "Memory optimized",
-            "Never sleep on Render"
+            "Login attempt limiting"
         ],
-        "session_rules": [
+        "new_rules": [
+            "Máy nào cũng có thể login khi hệ thống trống",
+            "User thường: tối đa 3 lần login/giờ",
+            "Admin: không giới hạn login", 
             "Chỉ 1 user được active tại thời điểm",
-            "User thường -> báo 'đang sử dụng tools'", 
-            "User muốn dùng khi admin active -> báo 'muốn xài tool'",
-            "Admin khác -> báo 'admin đang sử dụng tool'"
+            "Tự động cooldown 30 phút khi vượt quá giới hạn"
         ],
         "endpoints": {
             "webhook": "/webhook",
             "health": "/health", 
             "admin_status": "/admin_status",
             "session_status": "/api/get_session_status",
-            "register_session": "/api/register_session"
+            "register_session": "/api/register_session",
+            "send_to_group": "/api/send_to_group"
         }
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
-    print(f"🚀 Starting Optimized Server on port {port}")
+    print(f"🚀 Starting Server với Phân Quyền Mới trên port {port}")
     print(f"🌐 Server URL: {SERVER_URL}")
     print(f"🛡️ Memory-optimized keep-alive: ACTIVE")
     print(f"🔔 Admin Confirmation System: ENABLED")
     print(f"🎯 Session Management: ENABLED")
+    print(f"👥 LINE Group Support: {'ENABLED' if LINE_GROUP_ID else 'DISABLED'}")
+    print(f"🔐 Login Attempt Limiting: ENABLED")
+    print(f"📊 New Rules: User thường 3 lần/giờ, Admin không giới hạn")
+    if LINE_GROUP_ID:
+        print(f"📢 Group ID: {LINE_GROUP_ID[:8]}...")
+    else:
+        print("⚠️ Chưa cấu hình LINE_GROUP_ID - Chỉ gửi tin nhắn cá nhân")
     print(f"🧹 Auto-cleanup: ENABLED")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
