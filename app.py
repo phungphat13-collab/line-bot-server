@@ -1,4 +1,4 @@
-# app.py (SERVER - FIX ĐỒNG BỘ CLIENT-SERVER VÀ LINE BOT)
+# app.py (SERVER - FIX VÒNG LẶP PHIÊN ĐĂNG NHẬP)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -7,6 +7,8 @@ from datetime import datetime, time as dt_time
 import time
 import threading
 import gc
+import random
+import string
 
 # ==================== ⚙️ CẤU HÌNH ====================
 logging.basicConfig(level=logging.WARNING)
@@ -14,19 +16,20 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# TOKEN LINE BOT - KIỂM TRA LẠI
+# TOKEN LINE BOT
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
 # ID nhóm LINE để nhận thông báo
-LINE_GROUP_ID = "ZpXWbVLYaj"  # ID từ link group
+LINE_GROUP_ID = "ZpXWbVLYaj"
 
 # ==================== 📊 BIẾN TOÀN CỤC ====================
 # QUẢN LÝ PHIÊN LÀM VIỆC
 active_session = {
     "is_active": False,
     "username": None,
-    "user_id": None,
+    "user_id": None,           # LINE User ID
+    "client_user_id": None,    # Client User ID (khác với LINE User ID)
     "start_time": None,
     "session_id": None,
     "end_reason": None,
@@ -34,8 +37,11 @@ active_session = {
     "last_activity": None
 }
 
-# LỆNH ĐANG CHỜ XỬ LÝ
-user_commands = {}
+# LỆNH ĐANG CHỜ XỬ LÝ - FIX: key = LINE User ID
+user_commands = {}  # Format: {"LINE_USER_ID": command}
+
+# CLIENT REGISTRY - FIX: lưu client info
+client_registry = {}  # Format: {"CLIENT_USER_ID": {"line_user_id": "xxx", "ip": "xxx", "last_seen": "xxx"}}
 
 # CHỐNG SPAM MESSAGE
 message_cooldown = {}
@@ -46,23 +52,39 @@ def cleanup_old_data():
     try:
         current_time = time.time()
         
+        # Xóa cooldown cũ (5 phút)
         expired_cooldowns = [k for k, v in message_cooldown.items() 
                            if current_time - v > 300]
         for key in expired_cooldowns:
             del message_cooldown[key]
             
+        # Xóa commands trống hoặc cũ (quá 30 phút)
         expired_commands = []
-        for user_id, cmd in user_commands.items():
+        for line_user_id, cmd in user_commands.items():
             if cmd.get('timestamp'):
                 try:
                     cmd_time = datetime.fromisoformat(cmd['timestamp'])
                     if (datetime.now() - cmd_time).total_seconds() > 1800:
-                        expired_commands.append(user_id)
+                        expired_commands.append(line_user_id)
                 except:
-                    expired_commands.append(user_id)
+                    expired_commands.append(line_user_id)
         
-        for user_id in expired_commands:
-            del user_commands[user_id]
+        for line_user_id in expired_commands:
+            del user_commands[line_user_id]
+            
+        # Xóa client registry cũ (quá 1 giờ không hoạt động)
+        expired_clients = []
+        for client_id, client_info in client_registry.items():
+            if client_info.get('last_seen'):
+                try:
+                    last_seen = datetime.fromisoformat(client_info['last_seen'])
+                    if (datetime.now() - last_seen).total_seconds() > 3600:
+                        expired_clients.append(client_id)
+                except:
+                    expired_clients.append(client_id)
+        
+        for client_id in expired_clients:
+            del client_registry[client_id]
             
     except Exception as e:
         print(f"Cleanup error: {e}")
@@ -89,6 +111,24 @@ def keep_alive():
 keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
 keep_alive_thread.start()
 print("🛡️ Keep-alive started")
+
+# ==================== 🔧 HÀM TIỆN ÍCH ====================
+def generate_client_user_id():
+    """Tạo Client User ID ngẫu nhiên"""
+    return f"client_{int(time.time())}_{random.randint(1000, 9999)}"
+
+def update_client_last_seen(client_user_id, ip_address=None):
+    """Cập nhật thời gian hoạt động cuối của client"""
+    if client_user_id in client_registry:
+        client_registry[client_user_id]['last_seen'] = datetime.now().isoformat()
+        if ip_address:
+            client_registry[client_user_id]['ip'] = ip_address
+
+def get_line_user_id_by_client(client_user_id):
+    """Lấy LINE User ID từ Client User ID"""
+    if client_user_id in client_registry:
+        return client_registry[client_user_id].get('line_user_id')
+    return None
 
 # ==================== 📱 HÀM GỬI LINE ====================
 def send_line_reply(reply_token, text):
@@ -171,8 +211,8 @@ def update_session_activity():
     if active_session["is_active"]:
         active_session["last_activity"] = datetime.now().isoformat()
 
-def start_new_session(username, user_id):
-    """Bắt đầu phiên làm việc mới"""
+def start_new_session(username, line_user_id, client_user_id):
+    """Bắt đầu phiên làm việc mới - FIX: lưu cả line_user_id và client_user_id"""
     if active_session["is_active"]:
         return False, f"Phiên làm việc đang được sử dụng bởi {active_session['username']}"
     
@@ -180,7 +220,8 @@ def start_new_session(username, user_id):
     active_session.update({
         "is_active": True,
         "username": username,
-        "user_id": user_id,
+        "user_id": line_user_id,           # LINE User ID
+        "client_user_id": client_user_id,  # Client User ID
         "start_time": datetime.now().isoformat(),
         "session_id": session_id,
         "end_reason": None,
@@ -188,7 +229,7 @@ def start_new_session(username, user_id):
         "last_activity": datetime.now().isoformat()
     })
     
-    print(f"✅ ĐÃ BẮT ĐẦU PHIÊN: {username} (ID: {session_id})")
+    print(f"✅ ĐÃ BẮT ĐẦU PHIÊN: {username} (LINE: {line_user_id[:8]}..., Client: {client_user_id[:10]}...)")
     
     return True, f"Đã bắt đầu phiên làm việc cho {username}"
 
@@ -198,36 +239,34 @@ def end_current_session(username=None, reason="normal_exit", message=""):
         print(f"⚠️ Không có phiên nào để kết thúc")
         return False, "Không có phiên làm việc nào đang chạy"
     
-    if username and username != active_session["username"]:
-        print(f"⚠️ Username không khớp: Active={active_session['username']}, Request={username}")
-        current_username = active_session["username"]
-    else:
-        current_username = active_session["username"]
+    current_username = active_session["username"]
+    line_user_id = active_session["user_id"]
+    client_user_id = active_session["client_user_id"]
     
-    print(f"📌 Đang kết thúc phiên: {current_username} - Lý do: {reason}")
+    print(f"📌 Đang kết thúc phiên: {current_username} (LINE: {line_user_id[:8]}...) - Lý do: {reason}")
     
-    ended_session = active_session.copy()
+    # XÓA LỆNH CỦA USER NÀY NẾU CÓ
+    if line_user_id in user_commands:
+        del user_commands[line_user_id]
+        print(f"🧹 Đã xóa lệnh của LINE user: {line_user_id[:8]}...")
     
+    # XÓA CLIENT REGISTRY NẾU CÓ
+    if client_user_id in client_registry:
+        del client_registry[client_user_id]
+        print(f"🧹 Đã xóa client registry: {client_user_id[:10]}...")
+    
+    # RESET ACTIVE SESSION
     active_session.update({
         "is_active": False,
         "username": None,
         "user_id": None,
+        "client_user_id": None,
         "start_time": None,
         "session_id": None,
         "end_reason": reason,
         "end_time": datetime.now().isoformat(),
         "last_activity": None
     })
-    
-    user_id_to_delete = None
-    for uid, cmd in user_commands.items():
-        if cmd.get('username') == current_username:
-            user_id_to_delete = uid
-            break
-    
-    if user_id_to_delete:
-        del user_commands[user_id_to_delete]
-        print(f"🧹 Đã xóa lệnh của user: {current_username}")
     
     print(f"✅ ĐÃ KẾT THÚC PHIÊN: {current_username} - Reason: {reason}")
     
@@ -235,28 +274,6 @@ def end_current_session(username=None, reason="normal_exit", message=""):
         send_to_group(message)
     
     return True, f"Đã kết thúc phiên làm việc của {current_username}"
-
-def force_end_session(reason="force_end", message=""):
-    """Force end session - dùng cho các trường hợp lỗi"""
-    if not active_session["is_active"]:
-        return False, "Không có phiên nào để force end"
-    
-    username = active_session["username"]
-    print(f"📌 Đang force end phiên: {username} - Lý do: {reason}")
-    
-    active_session.update({
-        "is_active": False,
-        "username": None,
-        "user_id": None,
-        "start_time": None,
-        "session_id": None,
-        "end_reason": reason,
-        "end_time": datetime.now().isoformat(),
-        "last_activity": None
-    })
-    
-    print(f"✅ ĐÃ FORCE END PHIÊN: {username}")
-    return True, f"Đã force end phiên của {username}"
 
 def get_session_info():
     """Lấy thông tin phiên hiện tại"""
@@ -285,6 +302,7 @@ def get_session_info():
         "is_active": True,
         "username": active_session["username"],
         "user_id": active_session["user_id"],
+        "client_user_id": active_session["client_user_id"],
         "start_time": active_session["start_time"],
         "duration": duration_text,
         "session_id": active_session["session_id"],
@@ -293,35 +311,24 @@ def get_session_info():
         "is_ready_for_new_session": False
     }
 
-# ==================== 🌐 WEBHOOK LINE - FIX KHÔNG TRẢ LỜI ====================
+# ==================== 🌐 WEBHOOK LINE ====================
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
-    """Webhook nhận lệnh từ LINE - ĐÃ FIX"""
+    """Webhook nhận lệnh từ LINE - FIX: xử lý đúng user_id"""
     try:
-        # 🔥 LOG REQUEST ĐỂ DEBUG
-        print(f"📥 Nhận webhook từ LINE...")
-        
         data = request.get_json()
         events = data.get('events', [])
-        
-        print(f"📊 Số events: {len(events)}")
         
         for event in events:
             event_type = event.get('type')
             source = event.get('source', {})
-            user_id = source.get('userId')
+            line_user_id = source.get('userId')  # 🔥 ĐÂY LÀ LINE USER ID
             group_id = source.get('groupId')
             reply_token = event.get('replyToken')
             
-            print(f"🔍 Event: {event_type}, User: {user_id}, Group: {group_id}, ReplyToken: {reply_token}")
-            
             if event_type == 'message':
                 message_text = event.get('message', {}).get('text', '').strip()
-                print(f"💬 Message: {message_text}")
-                
-                # XÁC ĐỊNH TARGET_ID (ƯU TIÊN GROUP)
-                target_id = group_id if group_id else user_id
                 
                 # LỆNH LOGIN
                 if message_text.startswith('.login '):
@@ -329,6 +336,7 @@ def line_webhook():
                     if ':' in credentials:
                         username, password = credentials.split(':', 1)
                         
+                        # KIỂM TRA PHIÊN ĐANG CHẠY
                         session_info = get_session_info()
                         if session_info["is_active"]:
                             current_user = session_info["username"]
@@ -339,18 +347,25 @@ def line_webhook():
                             )
                             continue
                         
+                        # 🔥 QUAN TRỌNG: XÓA COMMAND CŨ NẾU CÓ
+                        if line_user_id in user_commands:
+                            del user_commands[line_user_id]
+                            print(f"🧹 Đã xóa command cũ của LINE user: {line_user_id[:8]}...")
+                        
+                        # TẠO COMMAND MỚI
                         command_id = f"cmd_{int(time.time())}"
-                        user_commands[user_id] = {
+                        user_commands[line_user_id] = {
                             "id": command_id,
                             "type": "start_automation",
                             "username": username,
                             "password": password,
                             "timestamp": datetime.now().isoformat(),
-                            "session_required": True
+                            "session_required": True,
+                            "line_user_id": line_user_id  # 🔥 LƯU THÊM LINE USER ID
                         }
                         
                         send_line_reply(reply_token, f"✅ Đã nhận lệnh đăng nhập cho {username}")
-                        print(f"📨 Lệnh login cho {username} từ user_id: {user_id}")
+                        print(f"📨 Lệnh login cho {username} từ LINE user_id: {line_user_id[:8]}...")
                         
                     else:
                         send_line_reply(reply_token, "❌ Sai cú pháp! Dùng: .login username:password")
@@ -361,34 +376,41 @@ def line_webhook():
                     
                     if session_info["is_active"]:
                         current_user = session_info["username"]
+                        active_line_user_id = active_session["user_id"]
                         
-                        active_user_id = active_session["user_id"]
-                        if active_user_id:
-                            command_id = f"cmd_stop_{int(time.time())}"
-                            user_commands[active_user_id] = {
-                                "id": command_id,
-                                "type": "stop_automation", 
-                                "timestamp": datetime.now().isoformat(),
-                                "username": current_user,
-                                "reason": "normal_exit"
-                            }
-                            print(f"📤 Đã gửi lệnh stop đến client: {current_user}")
-                        
-                        send_line_reply(reply_token, f"🚪 **Đang yêu cầu {current_user} thoát web...**")
-                        
-                        def delayed_end_session():
-                            time.sleep(2)
-                            session_info_check = get_session_info()
-                            if session_info_check["is_active"] and session_info_check["username"] == current_user:
-                                print(f"⏰ Tự động kết thúc phiên sau timeout: {current_user}")
-                                end_current_session(
-                                    username=current_user,
-                                    reason="normal_exit",
-                                    message=f"🚪 **{current_user} đã thoát web**\n📌 Hệ thống đã về STANDBY"
-                                )
-                        
-                        threading.Thread(target=delayed_end_session, daemon=True).start()
-                        
+                        # Nếu là người đang active hoặc admin
+                        if line_user_id == active_line_user_id or group_id:
+                            # 🔥 GỬI LỆNH STOP ĐẾN CLIENT
+                            active_client_user_id = active_session["client_user_id"]
+                            if active_client_user_id and active_line_user_id in user_commands:
+                                command_id = f"cmd_stop_{int(time.time())}"
+                                user_commands[active_line_user_id] = {
+                                    "id": command_id,
+                                    "type": "stop_automation", 
+                                    "timestamp": datetime.now().isoformat(),
+                                    "username": current_user,
+                                    "reason": "normal_exit",
+                                    "line_user_id": active_line_user_id
+                                }
+                                print(f"📤 Đã gửi lệnh stop đến client: {current_user}")
+                            
+                            send_line_reply(reply_token, f"🚪 **Đang yêu cầu {current_user} thoát web...**")
+                            
+                            # ĐỢI 2 GIÂY RỒI TỰ ĐỘNG KẾT THÚC PHIÊN
+                            def delayed_end_session():
+                                time.sleep(2)
+                                session_info_check = get_session_info()
+                                if session_info_check["is_active"] and session_info_check["username"] == current_user:
+                                    print(f"⏰ Tự động kết thúc phiên sau timeout: {current_user}")
+                                    end_current_session(
+                                        username=current_user,
+                                        reason="normal_exit",
+                                        message=f"🚪 **{current_user} đã thoát web**\n📌 Hệ thống đã về STANDBY"
+                                    )
+                            
+                            threading.Thread(target=delayed_end_session, daemon=True).start()
+                        else:
+                            send_line_reply(reply_token, f"❌ Bạn không có quyền dừng phiên của {current_user}")
                     else:
                         send_line_reply(reply_token, "❌ Không có phiên làm việc nào đang chạy")
                 
@@ -436,25 +458,7 @@ def line_webhook():
                 # LỆNH TEST (ẩn)
                 elif message_text == '.test':
                     send_line_reply(reply_token, "✅ Bot đang hoạt động bình thường!")
-                
-                # KHÔNG PHẢI LỆNH - BỎ QUA
-                else:
-                    # Không reply các tin nhắn thường
-                    pass
-            
-            elif event_type == 'join':
-                # Khi bot được thêm vào group
-                if group_id:
-                    welcome_text = """🎉 **Bot Ticket Automation** đã tham gia nhóm!
-
-📋 **QUY TRÌNH LÀM VIỆC:**
-1️⃣ .login username:password → Bắt đầu phiên mới
-2️⃣ Hệ thống làm việc → Chỉ 1 user active
-3️⃣ KẾT THÚC (4 trường hợp) → Về STANDBY
-4️⃣ Chờ phiên tiếp theo
-
-💡 **Lưu ý:** KHÔNG cho phép login mới khi có phiên đang chạy!"""
-                    send_line_message(group_id, welcome_text)
+                    print(f"🧪 Test command từ LINE user: {line_user_id[:8]}...")
         
         return jsonify({"status": "success", "message": "Webhook processed"})
         
@@ -470,12 +474,13 @@ def api_start_session():
     try:
         data = request.get_json()
         username = data.get('username')
-        user_id = data.get('user_id')
+        line_user_id = data.get('user_id')  # LINE User ID từ client
+        client_user_id = data.get('client_user_id')  # Client User ID
         
-        if not username or not user_id:
+        if not username or not line_user_id or not client_user_id:
             return jsonify({"status": "error", "message": "Thiếu tham số"})
         
-        print(f"📥 Yêu cầu start_session: {username} ({user_id})")
+        print(f"📥 Yêu cầu start_session: {username} (LINE: {line_user_id[:8]}..., Client: {client_user_id[:10]}...)")
         
         session_info = get_session_info()
         if session_info["is_active"]:
@@ -486,7 +491,7 @@ def api_start_session():
                 "current_session": session_info
             })
         
-        success, message = start_new_session(username, user_id)
+        success, message = start_new_session(username, line_user_id, client_user_id)
         if success:
             send_to_group(f"🎯 **BẮT ĐẦU PHIÊN MỚI**\n👤 User: {username}")
             
@@ -510,8 +515,9 @@ def api_end_session():
         username = data.get('username')
         reason = data.get('reason', 'unknown')
         message = data.get('message', '')
+        client_user_id = data.get('client_user_id')
         
-        print(f"📥 Nhận end_session từ client: username={username}, reason={reason}")
+        print(f"📥 Nhận end_session từ client: username={username}, reason={reason}, client={client_user_id[:10] if client_user_id else 'unknown'}")
         
         success, result_message = end_current_session(username, reason, message)
         
@@ -534,36 +540,6 @@ def api_end_session():
         logger.error(f"End session error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/force_end_session', methods=['POST'])
-def api_force_end_session():
-    """API force end session"""
-    try:
-        data = request.get_json()
-        reason = data.get('reason', 'unknown')
-        message = data.get('message', '')
-        
-        print(f"📥 Nhận force_end_session: reason={reason}")
-        
-        success, result_message = force_end_session(reason, message)
-        
-        if success:
-            return jsonify({
-                "status": "force_ended",
-                "message": result_message,
-                "reason": reason,
-                "session_ended": True
-            })
-        
-        return jsonify({
-            "status": "no_session",
-            "message": "Không có phiên nào để force end",
-            "session_ended": False
-        })
-        
-    except Exception as e:
-        logger.error(f"Force end session error: {e}")
-        return jsonify({"status": "error", "message": str(e)})
-
 @app.route('/api/get_session_info', methods=['GET'])
 def api_get_session_info():
     """API lấy thông tin phiên hiện tại"""
@@ -572,6 +548,108 @@ def api_get_session_info():
         return jsonify(get_session_info())
     except Exception as e:
         return jsonify({"is_active": False, "error": str(e)})
+
+# ==================== 🔧 API LOCAL CLIENT - FIX QUAN TRỌNG ====================
+
+@app.route('/api/register_local', methods=['POST'])
+def api_register_local():
+    """API để local client đăng ký và nhận user_id - FIX: luôn trả về LINE User ID có command"""
+    try:
+        data = request.get_json()
+        client_ip = request.remote_addr
+        
+        print(f"📥 Nhận yêu cầu register_local từ IP: {client_ip}")
+        
+        # TÌM LINE USER ID CÓ COMMAND ĐANG CHỜ
+        line_user_id_with_command = None
+        command_data = None
+        
+        for line_uid, cmd in user_commands.items():
+            if cmd.get('type') == 'start_automation':
+                line_user_id_with_command = line_uid
+                command_data = cmd
+                break
+        
+        if line_user_id_with_command and command_data:
+            # TẠO CLIENT USER ID MỚI CHO MỖI LẦN ĐĂNG KÝ
+            client_user_id = generate_client_user_id()
+            
+            # LƯU VÀO CLIENT REGISTRY
+            client_registry[client_user_id] = {
+                "line_user_id": line_user_id_with_command,
+                "ip": client_ip,
+                "registered_at": datetime.now().isoformat(),
+                "last_seen": datetime.now().isoformat(),
+                "command_type": command_data.get('type')
+            }
+            
+            print(f"🔗 Đăng ký client: {client_user_id[:10]}... cho LINE user: {line_user_id_with_command[:8]}...")
+            
+            return jsonify({
+                "status": "registered", 
+                "user_id": line_user_id_with_command,  # 🔥 LINE User ID
+                "client_user_id": client_user_id,      # 🔥 Client User ID mới
+                "has_command": True,
+                "command": command_data,
+                "session_info": get_session_info()
+            })
+        else:
+            return jsonify({
+                "status": "waiting", 
+                "message": "Chưa có lệnh nào",
+                "session_info": get_session_info()
+            })
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/get_commands/<line_user_id>', methods=['GET'])
+def api_get_commands(line_user_id):
+    """API để local client lấy lệnh - FIX: dùng LINE User ID"""
+    try:
+        update_session_activity()
+        
+        if line_user_id in user_commands:
+            command = user_commands[line_user_id]
+            return jsonify({
+                "has_command": True,
+                "command": command
+            })
+        else:
+            return jsonify({"has_command": False})
+    except Exception as e:
+        return jsonify({"has_command": False, "error": str(e)})
+
+@app.route('/api/complete_command', methods=['POST'])
+def api_complete_command():
+    """API đánh dấu lệnh đã hoàn thành"""
+    try:
+        data = request.get_json()
+        line_user_id = data.get('user_id')  # LINE User ID
+        client_user_id = data.get('client_user_id')  # Client User ID
+        command_id = data.get('command_id')
+        
+        print(f"📥 Nhận complete_command: LINE={line_user_id[:8] if line_user_id else 'unknown'}..., Client={client_user_id[:10] if client_user_id else 'unknown'}, cmd_id={command_id}")
+        
+        if line_user_id in user_commands and user_commands[line_user_id]["id"] == command_id:
+            # 🔥 QUAN TRỌNG: KHÔNG XÓA COMMAND NGAY, để client có thể retry
+            # Chỉ xóa nếu đã xử lý xong và thành công
+            command_type = user_commands[line_user_id].get('type')
+            if command_type == 'start_automation':
+                # Với lệnh start, giữ lại để client có thể retry nếu fail
+                print(f"✅ Đã hoàn thành lệnh {command_id}, giữ lại để retry nếu cần")
+            else:
+                # Với lệnh stop, xóa luôn
+                del user_commands[line_user_id]
+                print(f"✅ Đã xóa lệnh {command_id}")
+        
+        # Cập nhật last seen cho client
+        if client_user_id:
+            update_client_last_seen(client_user_id)
+        
+        return jsonify({"status": "completed"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 # ==================== 📢 API GỬI TIN NHẮN ====================
 
@@ -605,75 +683,6 @@ def api_send_message():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# ==================== 🔧 API LOCAL CLIENT ====================
-
-@app.route('/api/register_local', methods=['POST'])
-def api_register_local():
-    """API để local client đăng ký và nhận user_id"""
-    try:
-        data = request.get_json()
-        client_ip = request.remote_addr
-        
-        print(f"📥 Nhận yêu cầu register_local từ IP: {client_ip}")
-        
-        if user_commands:
-            user_id = next(iter(user_commands))
-            command = user_commands[user_id]
-            
-            print(f"🔗 Local client đăng ký cho user_id: {user_id}, command: {command.get('type')}")
-            
-            return jsonify({
-                "status": "registered", 
-                "user_id": user_id,
-                "has_command": True,
-                "command": command,
-                "session_info": get_session_info()
-            })
-        else:
-            return jsonify({
-                "status": "waiting", 
-                "message": "Chưa có lệnh nào",
-                "session_info": get_session_info()
-            })
-            
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/get_commands/<user_id>', methods=['GET'])
-def api_get_commands(user_id):
-    """API để local client lấy lệnh"""
-    try:
-        update_session_activity()
-        
-        if user_id in user_commands:
-            command = user_commands[user_id]
-            return jsonify({
-                "has_command": True,
-                "command": command
-            })
-        else:
-            return jsonify({"has_command": False})
-    except Exception as e:
-        return jsonify({"has_command": False, "error": str(e)})
-
-@app.route('/api/complete_command', methods=['POST'])
-def api_complete_command():
-    """API đánh dấu lệnh đã hoàn thành"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        command_id = data.get('command_id')
-        
-        print(f"📥 Nhận complete_command: user_id={user_id}, cmd_id={command_id}")
-        
-        if user_id in user_commands and user_commands[user_id]["id"] == command_id:
-            del user_commands[user_id]
-            print(f"✅ Đã hoàn thành và xóa lệnh {command_id}")
-        
-        return jsonify({"status": "completed"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
 # ==================== 📊 HEALTH & MONITORING ====================
 
 @app.route('/health', methods=['GET'])
@@ -686,15 +695,17 @@ def health():
     return jsonify({
         "status": "healthy",
         "server": "LINE Ticket Automation Server",
-        "version": "13.0 - ĐỒNG BỘ CLIENT-SERVER",
+        "version": "14.0 - FIX VÒNG LẶP PHIÊN",
         "timestamp": datetime.now().isoformat(),
         "session": session_info,
         "pending_commands": len(user_commands),
+        "registered_clients": len(client_registry),
         "line_bot_status": "✅ Webhook Active",
-        "notification_flow": [
-            "🔥 .thoát web → Server gửi LINE",
-            "🔥 3 trường hợp khác → Client tự gửi LINE",
-            "✅ Tất cả đều → Reset phiên NGAY → STANDBY"
+        "fixes": [
+            "✅ Xóa command cũ khi có command mới",
+            "✅ Tạo Client User ID mới mỗi lần đăng ký",
+            "✅ Luôn trả về LINE User ID có command",
+            "✅ Xóa client registry khi kết thúc phiên"
         ]
     })
 
@@ -710,16 +721,16 @@ def home():
     
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "13.0 - FIX LINE BOT", 
+        "version": "14.0 - FIX VÒNG LẶP PHIÊN",
         "status": status_message,
-        "line_bot": {
-            "webhook": "✅ Active",
-            "reply_method": "✅ Using replyToken",
-            "group_id": LINE_GROUP_ID,
-            "commands": [".login", ".thoát web", ".status", ".help"]
+        "active_session": {
+            "username": active_session["username"],
+            "line_user_id": active_session["user_id"][:8] + "..." if active_session["user_id"] else None,
+            "client_user_id": active_session["client_user_id"][:10] + "..." if active_session["client_user_id"] else None,
+            "is_active": active_session["is_active"]
         },
-        "active_session": active_session,
-        "pending_commands": list(user_commands.keys())
+        "pending_commands": len(user_commands),
+        "registered_clients": len(client_registry)
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
@@ -728,34 +739,34 @@ if __name__ == "__main__":
     
     print(f"""
 🚀 ========================================================
-🚀 SERVER START - FIX LINE BOT KHÔNG TRẢ LỜI
+🚀 SERVER START - FIX VÒNG LẶP PHIÊN ĐĂNG NHẬP
 🚀 ========================================================
 🌐 Server URL: {SERVER_URL}
 👥 LINE Group ID: {LINE_GROUP_ID}
 🛡️ Keep-alive: ACTIVE
 🧹 Auto-cleanup: ENABLED
 
-🎯 LINE BOT FIXES:
-• ✅ Dùng replyToken thay vì push message
-• ✅ Xử lý cả group và private chat
-• ✅ Trả lời ngay khi nhận lệnh
-• ✅ Có log debug chi tiết
+🎯 FIXES QUAN TRỌNG:
+• ✅ Tạo Client User ID mới mỗi lần đăng ký
+• ✅ Luôn trả về LINE User ID có command
+• ✅ Xóa command cũ khi có command mới
+• ✅ Xóa client registry khi kết thúc phiên
 
-🔴 4 TRƯỜNG HỢP KẾT THÚC:
-  1. .thoát web → Server tự kết thúc + Gửi LINE → STANDBY
-  2. Đăng nhập lỗi → Client gửi LINE → Server reset NGAY → STANDBY  
-  3. Tắt web đột ngột → Client gửi LINE → Server reset NGAY → STANDBY
-  4. Đến mốc thời gian → Client gửi LINE → Server reset NGAY → STANDBY
+🔴 FLOW HOẠT ĐỘNG ĐÚNG:
+  1. User1 .login → Server lưu command với LINE User ID
+  2. Client đăng ký → Nhận LINE User ID + Client User ID mới
+  3. Client xử lý command → Thành công/Thất bại
+  4. .thoát web → Server xóa command + client registry
+  5. User2 .login → Server lưu command mới (ghi đè cũ)
+  6. Client đăng ký lại → Nhận LINE User ID + Client User ID mới
+  7. Lặp lại vô hạn...
 
-📋 LỆNH LINE BOT:
-• .login username:password
-• .thoát web
-• .status
-• .help
-
-📊 TRẠNG THÁI HIỆN TẠI: {get_session_info()['status']}
-👤 USER ACTIVE: {get_session_info()['username'] if get_session_info()['is_active'] else 'None'}
-🕐 TIME: {datetime.now().strftime('%H:%M:%S')}
+📊 TRẠNG THÁI HIỆN TẠI:
+• Session: {get_session_info()['status']}
+• Active User: {get_session_info()['username'] if get_session_info()['is_active'] else 'None'}
+• Pending Commands: {len(user_commands)}
+• Registered Clients: {len(client_registry)}
+• Time: {datetime.now().strftime('%H:%M:%S')}
 ========================================================
     """)
     
