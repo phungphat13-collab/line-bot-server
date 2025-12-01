@@ -1,4 +1,4 @@
-# app.py (SERVER - CHỈ HOẠT ĐỘNG TRONG NHÓM)
+# app.py (SERVER - CHỈ HOẠT ĐỘNG TRONG NHÓM - ĐÃ LOẠI BỎ PHÂN QUYỀN)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -20,16 +20,14 @@ SESSION_TIMEOUT = 3600  # 1 giờ
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
-# ID nhóm LINE để nhận thông báo - ĐÃ CẬP NHẬT
+# ID nhóm LINE để nhận thông báo
 LINE_GROUP_ID = "ZpXWbVLYaj"  # ID từ link group
 
 # Dùng dict đơn giản, tự động dọn dẹp
 user_sessions = {}
 user_commands = {}
 message_cooldown = {}
-pending_confirmations = {}  # Lưu trạng thái chờ xác nhận từ admin
-admin_responses = {}        # Lưu phản hồi từ admin
-active_sessions = {}        # Lưu session đang active
+active_sessions = {}        # Lưu session đang active - CHỈ 1 SESSION TẠI THỜI ĐIỂM
 
 # ==================== 🧹 MEMORY CLEANUP ====================
 def cleanup_old_sessions():
@@ -48,10 +46,6 @@ def cleanup_old_sessions():
                 del user_sessions[user_id]
             if user_id in user_commands:
                 del user_commands[user_id]
-            if user_id in pending_confirmations:
-                del pending_confirmations[user_id]
-            if user_id in admin_responses:
-                del admin_responses[user_id]
             if user_id in active_sessions:
                 del active_sessions[user_id]
                 
@@ -60,12 +54,6 @@ def cleanup_old_sessions():
         expired_cooldowns = [k for k, v in message_cooldown.items() if current_time - v > 300]
         for key in expired_cooldowns:
             del message_cooldown[key]
-            
-        # Dọn confirmations cũ (quá 30 phút)
-        expired_confirmations = [k for k, v in pending_confirmations.items() 
-                               if current_time - v.get('timestamp', 0) > 1800]
-        for user_id in expired_confirmations:
-            del pending_confirmations[user_id]
             
         # Dọn active sessions cũ (quá 2 giờ)
         expired_active = [k for k, v in active_sessions.items() 
@@ -148,26 +136,6 @@ def send_to_group(text):
         logger.error(f"Send to group error: {e}")
         return False
 
-def send_confirmation_message(admin_id, shift_name, message, options):
-    """Gửi tin nhắn xác nhận thoát cho admin"""
-    try:
-        option_text = "\n".join([f"• {opt}" for opt in options])
-        full_message = f"🔔 [XÁC NHẬN THOÁT]\n\n{message}\n\nLựa chọn:\n{option_text}"
-        
-        if send_line_message(admin_id, full_message):
-            # Lưu trạng thái đang chờ xác nhận
-            pending_confirmations[admin_id] = {
-                'shift_name': shift_name,
-                'message': message,
-                'timestamp': time.time(),
-                'options': options
-            }
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Send confirmation error: {e}")
-        return False
-
 def get_active_session_info():
     """Lấy thông tin session đang active"""
     if active_sessions:
@@ -177,22 +145,17 @@ def get_active_session_info():
         return {
             'has_active_session': True,
             'active_user': session.get('username', 'Unknown'),
-            'user_type': session.get('user_type', 'user'),
             'start_time': session.get('start_time'),
             'user_id': user_id
         }
     else:
         return {'has_active_session': False}
 
-def is_admin_user(username):
-    """Kiểm tra user có phải admin không"""
-    return username in ["27838", "167802"]
-
 # ==================== 🌐 API ENDPOINTS TỐI ƯU ====================
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
-    """Webhook nhận lệnh từ LINE - CHỈ HOẠT ĐỘNG TRONG NHÓM"""
+    """Webhook nhận lệnh từ LINE - CHỈ HOẠT ĐỘNG TRONG NHÓM - ĐÃ LOẠI BỎ PHÂN QUYỀN"""
     try:
         data = request.get_json()
         events = data.get('events', [])
@@ -218,45 +181,28 @@ def line_webhook():
             if event_type == 'message':
                 message_text = event.get('message', {}).get('text', '').strip().lower()
                 
-                # XỬ LÝ PHẢN HỒI XÁC NHẬN TỪ ADMIN (trong nhóm)
-                if user_id in pending_confirmations:
-                    if message_text in ['.ok', '.khong']:
-                        # Lưu phản hồi từ admin
-                        admin_responses[user_id] = message_text
-                        del pending_confirmations[user_id]
-                        
-                        if message_text == '.ok':
-                            send_line_message(target_id, f"✅ Admin {user_sessions.get(user_id, {}).get('username', 'Unknown')} đã xác nhận thoát hệ thống.")
-                        else:
-                            send_line_message(target_id, f"🔄 Admin {user_sessions.get(user_id, {}).get('username', 'Unknown')} từ chối thoát - Tiếp tục sử dụng")
-                        
-                        continue  # Không xử lý tiếp
-                
                 # XỬ LÝ LỆNH TRONG NHÓM - TẤT CẢ LỆNH ĐỀU HOẠT ĐỘNG
                 if message_text.startswith('.login '):
                     credentials = message_text[7:]
                     if ':' in credentials:
                         username, password = credentials.split(':', 1)
                         
-                        # KIỂM TRA SESSION CONFLICT - USER THƯỜNG KHÔNG GIỚI HẠN
+                        # KIỂM TRA SESSION CONFLICT - CHỈ 1 USER ĐƯỢC ACTIVE
                         active_session = get_active_session_info()
                         if active_session['has_active_session']:
                             active_user = active_session['active_user']
-                            active_user_type = active_session['user_type']
-                            current_user_type = "admin" if is_admin_user(username) else "user"
                             
-                            # RULE MỚI: Chỉ chặn khi có user khác đang active
+                            # RULE: Chỉ chặn khi có user KHÁC đang active
                             if active_user != username:
                                 send_line_message(target_id, f"⚠️ {active_user} đang sử dụng tools. Vui lòng chờ.")
                                 continue
                         
-                        # CHO PHÉP LOGIN - USER THƯỜNG KHÔNG GIỚI HẠN
+                        # CHO PHÉP LOGIN
                         user_sessions[user_id] = {
                             'username': username,
                             'password': password,
                             'status': 'waiting_command',
-                            'last_activity': time.time(),
-                            'user_type': "admin" if is_admin_user(username) else "user"
+                            'last_activity': time.time()
                         }
                         
                         command_id = f"cmd_{int(time.time())}"
@@ -294,7 +240,7 @@ def line_webhook():
                     # LỆNH .status
                     active_session = get_active_session_info()
                     if active_session['has_active_session']:
-                        status_text = f"📊 Hệ thống đang chạy\n👤 User: {active_session['active_user']}\n🎯 Loại: {active_session['user_type']}"
+                        status_text = f"📊 Hệ thống đang chạy\n👤 User: {active_session['active_user']}"
                     else:
                         status_text = "📊 Hệ thống đang rảnh - Không có user nào active"
                     
@@ -311,14 +257,11 @@ def line_webhook():
 .help - Hướng dẫn sử dụng
 
 🎯 LƯU Ý:
-• Chỉ 1 user được active tại thời điểm"""
+• Chỉ 1 user được active tại thời điểm
+• Khi có người đang sử dụng, hệ thống sẽ thông báo
+• Gửi '.thoát web' để giải phóng phiên làm việc"""
                     
                     send_line_message(target_id, help_text)
-                
-                elif message_text in ['.ok', '.khong']:
-                    # Nếu không có pending confirmation, thông báo lỗi
-                    if user_id not in pending_confirmations:
-                        send_line_message(target_id, "❌ Không có yêu cầu xác nhận nào đang chờ")
             
             elif event_type == 'join':
                 welcome_text = """🎉 Bot Ticket Automation đã tham gia nhóm!
@@ -338,66 +281,14 @@ def line_webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-# ==================== 🔔 API XÁC NHẬN ADMIN ====================
-
-@app.route('/api/send_confirmation', methods=['POST'])
-def api_send_confirmation():
-    """API gửi tin nhắn xác nhận thoát cho admin"""
-    try:
-        data = request.get_json()
-        admin_id = data.get('admin_id')
-        shift_name = data.get('shift_name')
-        message = data.get('message')
-        options = data.get('options', ['.ok', '.khong'])
-        
-        if not all([admin_id, shift_name, message]):
-            return jsonify({"status": "error", "message": "Thiếu tham số"})
-        
-        if send_confirmation_message(admin_id, shift_name, message, options):
-            send_to_group(f"⏳ Đang chờ xác nhận thoát từ {shift_name}")
-            return jsonify({
-                "status": "success", 
-                "message": "Đã gửi xác nhận"
-            })
-        else:
-            return jsonify({
-                "status": "error", 
-                "message": "Không thể gửi tin nhắn"
-            })
-            
-    except Exception as e:
-        logger.error(f"Send confirmation API error: {e}")
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/get_admin_response/<admin_id>', methods=['GET'])
-def api_get_admin_response(admin_id):
-    """API kiểm tra phản hồi từ admin"""
-    try:
-        if admin_id in admin_responses:
-            response = admin_responses[admin_id]
-            # Xóa phản hồi sau khi lấy
-            del admin_responses[admin_id]
-            
-            return jsonify({
-                "has_response": True,
-                "response": response
-            })
-        else:
-            return jsonify({"has_response": False})
-            
-    except Exception as e:
-        logger.error(f"Get admin response error: {e}")
-        return jsonify({"has_response": False, "error": str(e)})
-
 # ==================== 🎯 API QUẢN LÝ SESSION ====================
 
 @app.route('/api/register_session', methods=['POST'])
 def api_register_session():
-    """API đăng ký session mới"""
+    """API đăng ký session mới - ĐÃ LOẠI BỎ PHÂN QUYỀN"""
     try:
         data = request.get_json()
         username = data.get('username')
-        is_admin = data.get('is_admin', False)
         user_id = data.get('user_id')
         
         if not username or not user_id:
@@ -415,16 +306,14 @@ def api_register_session():
         # Đăng ký session mới
         active_sessions[user_id] = {
             'username': username,
-            'user_type': 'admin' if is_admin else 'user',
             'start_time': datetime.now().isoformat(),
             'last_activity': time.time()
         }
         
         # Gửi thông báo đến nhóm
-        user_type = "Admin" if is_admin else "User"
-        send_to_group(f"🎯 {user_type} {username} đã bắt đầu session automation")
+        send_to_group(f"🎯 {username} đã bắt đầu session automation")
         
-        logger.info(f"🎯 Registered session for {username} ({'admin' if is_admin else 'user'})")
+        logger.info(f"🎯 Registered session for {username}")
         
         return jsonify({
             "status": "registered",
@@ -609,7 +498,6 @@ def health():
     
     active_users = len([u for u in user_sessions.values() if u.get('status') == 'connected'])
     pending_commands = len(user_commands)
-    pending_confirmations_count = len(pending_confirmations)
     active_sessions_count = len(active_sessions)
     
     return jsonify({
@@ -618,7 +506,6 @@ def health():
         "group_only": True,
         "active_users": active_users,
         "pending_commands": pending_commands,
-        "pending_confirmations": pending_confirmations_count,
         "active_sessions": active_sessions_count,
         "total_sessions": len(user_sessions),
         "timestamp": datetime.now().isoformat()
@@ -626,13 +513,13 @@ def health():
 
 @app.route('/admin_status', methods=['GET'])
 def admin_status():
-    """Trang trạng thái admin"""
+    """Trang trạng thái admin - ĐÃ LOẠI BỎ PHÂN QUYỀN"""
     cleanup_old_sessions()
     
     status_info = {
         "server": "LINE Ticket Automation Server",
-        "version": "4.0 - Group Only",
-        "admin_features": "ENABLED",
+        "version": "4.0 - Group Only - No Admin",
+        "admin_features": "DISABLED",
         "session_management": "ENABLED",
         "group_only": "ENABLED",
         "line_group_id": LINE_GROUP_ID,
@@ -640,13 +527,10 @@ def admin_status():
         "statistics": {
             "total_sessions": len(user_sessions),
             "active_commands": len(user_commands),
-            "pending_confirmations": len(pending_confirmations),
-            "waiting_responses": len(admin_responses),
             "active_sessions": len(active_sessions)
         },
         "active_users": [],
-        "active_sessions_list": [],
-        "pending_confirmations_list": []
+        "active_sessions_list": []
     }
     
     # Thông tin user đang hoạt động
@@ -655,7 +539,6 @@ def admin_status():
             status_info["active_users"].append({
                 "user_id": user_id[:8] + "...",
                 "username": session.get('username', 'N/A'),
-                "user_type": session.get('user_type', 'user'),
                 "last_activity": session.get('last_activity', 0),
                 "client_ip": session.get('client_ip', 'N/A')
             })
@@ -665,42 +548,29 @@ def admin_status():
         status_info["active_sessions_list"].append({
             "user_id": user_id[:8] + "...",
             "username": session.get('username', 'N/A'),
-            "user_type": session.get('user_type', 'user'),
             "start_time": session.get('start_time'),
             "last_activity": session.get('last_activity', 0)
-        })
-    
-    # Thông tin xác nhận đang chờ
-    for admin_id, confirmation in pending_confirmations.items():
-        status_info["pending_confirmations_list"].append({
-            "admin_id": admin_id[:8] + "...",
-            "shift_name": confirmation.get('shift_name', 'N/A'),
-            "timestamp": confirmation.get('timestamp', 0),
-            "message_preview": confirmation.get('message', '')[:50] + "..."
         })
     
     return jsonify(status_info)
 
 @app.route('/', methods=['GET'])
 def home():
-    """Trang chủ"""
+    """Trang chủ - ĐÃ LOẠI BỎ PHÂN QUYỀN"""
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "4.0 - Group Only", 
+        "version": "4.0 - Group Only - No Admin", 
         "status": "running",
         "mode": "GROUP_ONLY",
         "features": [
             "Auto ticket processing",
-            "Shift management", 
-            "Admin confirmation system",
             "Session management",
             "LINE Group only commands"
         ],
         "rules": [
             "Tất cả lệnh chỉ hoạt động trong nhóm",
-            "User thường: KHÔNG GIỚI HẠN số lần login",
-            "Admin: không giới hạn login", 
-            "Chỉ 1 user được active tại thời điểm"
+            "Chỉ 1 user được active tại thời điểm",
+            "Không có phân quyền admin/user - Tất cả đều bình đẳng"
         ],
         "commands_in_group": [
             ".login username:password",
@@ -711,7 +581,6 @@ def home():
         "endpoints": {
             "webhook": "/webhook",
             "health": "/health", 
-            "admin_status": "/admin_status",
             "session_status": "/api/get_session_status",
             "register_session": "/api/register_session",
             "send_to_group": "/api/send_to_group"
@@ -725,9 +594,8 @@ if __name__ == "__main__":
     print(f"🌐 Server URL: {SERVER_URL}")
     print(f"👥 LINE Group ID: {LINE_GROUP_ID}")
     print(f"🛡️ Memory-optimized keep-alive: ACTIVE")
-    print(f"🔔 Admin Confirmation System: ENABLED")
     print(f"🎯 Session Management: ENABLED")
     print(f"📋 Commands: Chỉ hoạt động trong nhóm")
-    print(f"🔐 Login: User thường KHÔNG GIỚI HẠN")
+    print(f"🔐 Login: KHÔNG PHÂN QUYỀN - TẤT CẢ USER BÌNH ĐẲNG")
     print(f"🧹 Auto-cleanup: ENABLED")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
