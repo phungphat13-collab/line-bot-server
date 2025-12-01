@@ -1,4 +1,4 @@
-# app.py (SERVER - CHỈ HOẠT ĐỘNG TRONG NHÓM - ĐÃ LOẠI BỎ PHÂN QUYỀN)
+# app.py (SERVER - PHIÊN LÀM VIỆC RIÊNG BIỆT)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -14,100 +14,73 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Giảm thời gian lưu session
-SESSION_TIMEOUT = 3600  # 1 giờ
-
 LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
 # ID nhóm LINE để nhận thông báo
 LINE_GROUP_ID = "ZpXWbVLYaj"  # ID từ link group
 
-# Dùng dict đơn giản, tự động dọn dẹp
-user_sessions = {}
-user_commands = {}
-message_cooldown = {}
-active_sessions = {}        # Lưu session đang active - CHỈ 1 SESSION TẠI THỜI ĐIỂM
-session_cleanup_times = {}  # Thời gian cleanup session
+# Các phiên làm việc
+active_session = {
+    "is_active": False,          # Có phiên đang chạy không
+    "username": None,            # Username đang active
+    "user_id": None,             # ID của user LINE
+    "start_time": None,          # Thời gian bắt đầu phiên
+    "session_id": None           # ID phiên làm việc
+}
+
+user_commands = {}               # Lệnh đang chờ xử lý
+message_cooldown = {}            # Chống spam
 
 # ==================== 🧹 MEMORY CLEANUP ====================
-def cleanup_old_sessions():
-    """Dọn dẹp session cũ để tiết kiệm memory"""
+def cleanup_old_data():
+    """Dọn dẹp dữ liệu cũ"""
     try:
         current_time = time.time()
-        expired_users = []
         
-        for user_id, session in user_sessions.items():
-            last_activity = session.get('last_activity', 0)
-            if current_time - last_activity > SESSION_TIMEOUT:
-                expired_users.append(user_id)
-        
-        for user_id in expired_users:
-            if user_id in user_sessions:
-                username = user_sessions[user_id].get('username', 'Unknown')
-                del user_sessions[user_id]
-                # THÔNG BÁO KHI SESSION HẾT HẠN
-                send_to_group(f"⏰ Session của {username} đã hết hạn (quá 1 giờ không hoạt động)")
-                
-            if user_id in user_commands:
-                del user_commands[user_id]
-            if user_id in active_sessions:
-                del active_sessions[user_id]
-                
-        # Dọn cooldown cũ
-        expired_cooldowns = [k for k, v in message_cooldown.items() if current_time - v > 300]
+        # Xóa cooldown cũ (5 phút)
+        expired_cooldowns = [k for k, v in message_cooldown.items() 
+                           if current_time - v > 300]
         for key in expired_cooldowns:
             del message_cooldown[key]
             
-        # Dọn active sessions cũ (quá 2 giờ)
-        expired_active = [k for k, v in active_sessions.items() 
-                         if current_time - v.get('last_activity', 0) > 7200]
-        for user_id in expired_active:
-            username = active_sessions[user_id].get('username', 'Unknown')
-            del active_sessions[user_id]
-            send_to_group(f"🕒 Session của {username} đã bị xóa do quá 2 giờ không hoạt động")
-            
-        if expired_users:
-            print(f"🧹 Cleaned up {len(expired_users)} expired sessions")
+        # Xóa commands trống
+        empty_commands = [k for k in user_commands if not user_commands[k]]
+        for key in empty_commands:
+            del user_commands[key]
             
     except Exception as e:
         print(f"Cleanup error: {e}")
 
-# ==================== 🛡️ CHỐNG SLEEP TỐI ƯU ====================
-def optimized_keep_alive():
-    """Keep-alive tối ưu memory"""
-    time.sleep(15)  # Chờ server ổn định
+# ==================== 🛡️ CHỐNG SLEEP ====================
+def keep_alive():
+    """Giữ server không bị sleep"""
+    time.sleep(15)
     
     while True:
         try:
-            # Gọi health với timeout ngắn
             requests.get(f"{SERVER_URL}/health", timeout=2)
             print(f"✅ Keep-alive at {datetime.now().strftime('%H:%M')}")
             
-            # Dọn dẹp memory sau mỗi lần ping
-            cleanup_old_sessions()
+            cleanup_old_data()
             gc.collect()
             
         except Exception as e:
             print(f"⚠️ Keep-alive: {e}")
         
-        time.sleep(300)  # 5 phút
+        time.sleep(300)
 
 # Khởi chạy keep-alive
-keep_alive_thread = threading.Thread(target=optimized_keep_alive, daemon=True)
+keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
 keep_alive_thread.start()
-print("🛡️ Optimized keep-alive started")
+print("🛡️ Keep-alive started")
 
-# ==================== 🛠️ HÀM TIỆN ÍCH TỐI ƯU ====================
+# ==================== 🛠️ HÀM TIỆN ÍCH ====================
 def send_line_message(chat_id, text, chat_type="user"):
-    """Gửi tin nhắn LINE - HỖ TRỢ CẢ USER VÀ NHÓM"""
+    """Gửi tin nhắn LINE"""
     try:
-        # Cập nhật last activity nếu là user
-        if chat_type == "user" and chat_id in user_sessions:
-            user_sessions[chat_id]['last_activity'] = time.time()
-        
-        # Kiểm tra cooldown
-        key = f"{chat_id}_{hash(text) % 10000}"  # Dùng hash để tiết kiệm memory
+        # Chống spam
+        key = f"{chat_id}_{hash(text) % 10000}"
         current_time = time.time()
         if key in message_cooldown and current_time - message_cooldown[key] < 5:
             return False
@@ -136,77 +109,87 @@ def send_to_group(text):
         if LINE_GROUP_ID:
             return send_line_message(LINE_GROUP_ID, text, "group")
         else:
-            print("⚠️ Chưa cấu hình LINE_GROUP_ID - Chỉ gửi tin nhắn cá nhân")
             return False
     except Exception as e:
         logger.error(f"Send to group error: {e}")
         return False
 
-def get_active_session_info():
-    """Lấy thông tin session đang active"""
+def get_session_info():
+    """Lấy thông tin phiên hiện tại"""
+    if not active_session["is_active"]:
+        return {
+            "is_active": False,
+            "message": "Không có phiên làm việc nào đang chạy"
+        }
+    
     try:
-        if active_sessions:
-            # Lấy session đầu tiên (chỉ cho phép 1 session active)
-            user_id = next(iter(active_sessions))
-            session = active_sessions[user_id]
-            start_time = session.get('start_time')
-            if start_time:
-                try:
-                    start_dt = datetime.fromisoformat(start_time)
-                    duration = datetime.now() - start_dt
-                    hours = int(duration.total_seconds() // 3600)
-                    minutes = int((duration.total_seconds() % 3600) // 60)
-                    duration_text = f"{hours}h{minutes}p"
-                except:
-                    duration_text = "Unknown"
-            else:
-                duration_text = "Unknown"
-                
-            return {
-                'has_active_session': True,
-                'active_user': session.get('username', 'Unknown'),
-                'user_id': user_id,
-                'start_time': start_time,
-                'duration': duration_text,
-                'last_activity': session.get('last_activity', time.time())
-            }
+        start_time = active_session["start_time"]
+        if start_time:
+            start_dt = datetime.fromisoformat(start_time)
+            duration = datetime.now() - start_dt
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            duration_text = f"{hours}h{minutes}p"
         else:
-            return {'has_active_session': False}
-    except Exception as e:
-        logger.error(f"Get active session error: {e}")
-        return {'has_active_session': False}
+            duration_text = "Unknown"
+    except:
+        duration_text = "Unknown"
+    
+    return {
+        "is_active": True,
+        "username": active_session["username"],
+        "start_time": active_session["start_time"],
+        "duration": duration_text,
+        "session_id": active_session["session_id"]
+    }
 
-def check_session_conflict(username):
-    """Kiểm tra xem username có đang được sử dụng không"""
-    active_session = get_active_session_info()
-    if active_session['has_active_session']:
-        return active_session['active_user'] != username
-    return False
+def start_new_session(username, user_id):
+    """Bắt đầu phiên làm việc mới"""
+    if active_session["is_active"]:
+        return False, f"Phiên làm việc đang được sử dụng bởi {active_session['username']}"
+    
+    session_id = f"session_{int(time.time())}"
+    active_session.update({
+        "is_active": True,
+        "username": username,
+        "user_id": user_id,
+        "start_time": datetime.now().isoformat(),
+        "session_id": session_id
+    })
+    
+    return True, f"Đã bắt đầu phiên làm việc cho {username}"
 
-def force_end_session(user_id):
-    """Buộc kết thúc session (khi browser đóng đột ngột)"""
-    try:
-        if user_id in active_sessions:
-            username = active_sessions[user_id].get('username', 'Unknown')
-            del active_sessions[user_id]
-            
-            # Xóa cả user_commands nếu có
-            if user_id in user_commands:
-                del user_commands[user_id]
-                
-            send_to_group(f"🚨 Session của {username} đã bị đóng đột ngột. Hệ thống sẵn sàng cho phiên mới.")
-            logger.info(f"🚨 Force ended session for {username}")
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Force end session error: {e}")
-        return False
+def end_current_session():
+    """Kết thúc phiên làm việc hiện tại"""
+    if not active_session["is_active"]:
+        return False, "Không có phiên làm việc nào đang chạy"
+    
+    username = active_session["username"]
+    
+    # Reset về trạng thái standby
+    active_session.update({
+        "is_active": False,
+        "username": None,
+        "user_id": None,
+        "start_time": None,
+        "session_id": None
+    })
+    
+    return True, f"Đã kết thúc phiên làm việc của {username}"
 
-# ==================== 🌐 API ENDPOINTS TỐI ƯU ====================
+def force_end_session():
+    """Buộc kết thúc phiên (khi có lỗi)"""
+    if active_session["is_active"]:
+        username = active_session["username"]
+        end_current_session()
+        return True, f"Đã buộc kết thúc phiên của {username}"
+    return False, "Không có phiên nào để buộc kết thúc"
+
+# ==================== 🌐 API ENDPOINTS ====================
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
-    """Webhook nhận lệnh từ LINE - CHỈ HOẠT ĐỘNG TRONG NHÓM - ĐÃ SỬA ĐỂ KIỂM TRA CONFLICT"""
+    """Webhook nhận lệnh từ LINE - LOGIC MỚI"""
     try:
         data = request.get_json()
         events = data.get('events', [])
@@ -217,162 +200,127 @@ def line_webhook():
             user_id = source.get('userId')
             group_id = source.get('groupId')
             
-            # Xác định đây là tin nhắn từ nhóm hay cá nhân
-            is_group_message = group_id is not None
-            
-            # CHỈ XỬ LÝ TIN NHẮN TRONG NHÓM
-            if not is_group_message:
+            # Chỉ xử lý trong nhóm
+            if not group_id:
                 continue
                 
-            target_id = group_id  # Luôn gửi về nhóm
-            
-            if not target_id:
-                continue
+            target_id = group_id
             
             if event_type == 'message':
                 message_text = event.get('message', {}).get('text', '').strip()
                 
-                # XỬ LÝ LỆNH TRONG NHÓM - TẤT CẢ LỆNH ĐỀU HOẠT ĐỘNG
+                # LỆNH LOGIN
                 if message_text.startswith('.login '):
                     credentials = message_text[7:]
                     if ':' in credentials:
                         username, password = credentials.split(':', 1)
                         
-                        # 🔥 **KIỂM TRA SESSION CONFLICT - CHỈ 1 USER ĐƯỢC ACTIVE**
-                        active_session = get_active_session_info()
-                        if active_session['has_active_session']:
-                            active_user = active_session['active_user']
-                            
-                            # RULE: Chỉ chặn khi có user KHÁC đang active
-                            if active_user != username:
-                                send_line_message(target_id, f"⚠️ {active_user} đang sử dụng tools. Vui lòng chờ user này thoát web (.thoát web) hoặc đợi hệ thống tự động giải phóng sau 2 giờ không hoạt động.")
-                                continue
+                        # 🔥 QUY TẮC MỚI: KHÔNG cho phép login mới trong cùng phiên
+                        if active_session["is_active"]:
+                            current_user = active_session["username"]
+                            send_line_message(target_id, 
+                                f"⚠️ {current_user} đang sử dụng tools.\n" +
+                                f"📌 Vui lòng đợi {current_user} thoát web (.thoát web) " +
+                                f"trước rồi mới bắt đầu phiên mới."
+                            )
+                            continue
                         
-                        # CHO PHÉP LOGIN (có thể là relogin cùng user hoặc user mới sau khi thoát)
-                        user_sessions[user_id] = {
-                            'username': username,
-                            'password': password,
-                            'status': 'waiting_command',
-                            'last_activity': time.time(),
-                            'created_at': datetime.now().isoformat()
-                        }
-                        
+                        # Tạo command mới
                         command_id = f"cmd_{int(time.time())}"
                         user_commands[user_id] = {
                             "id": command_id,
                             "type": "start_automation",
                             "username": username,
                             "password": password,
-                            "timestamp": datetime.now().isoformat()
+                            "timestamp": datetime.now().isoformat(),
+                            "session_required": True  # Yêu cầu bắt đầu phiên mới
                         }
                         
-                        # Gửi thông báo khác nhau tùy trường hợp
-                        active_session = get_active_session_info()
-                        if active_session['has_active_session'] and active_session['active_user'] == username:
-                            send_line_message(target_id, f"🔄 Đang khởi động lại automation cho {username}")
-                        else:
-                            send_line_message(target_id, f"✅ Đã nhận lệnh đăng nhập cho {username}. Hệ thống đang khởi động...")
-                        
-                        logger.info(f"📨 Sent command to {user_id} for {username}")
+                        send_line_message(target_id, f"✅ Đã nhận lệnh đăng nhập cho {username}")
+                        print(f"📨 Lệnh login cho {username} từ user_id: {user_id}")
                         
                     else:
                         send_line_message(target_id, "❌ Sai cú pháp! Dùng: .login username:password")
                 
+                # LỆNH THOÁT WEB
                 elif message_text in ['.thoát web', '.thoat web', '.stop', '.dừng', '.exit']:
-                    # LỆNH THOÁT WEB - GIẢI PHÓNG SESSION
-                    active_session = get_active_session_info()
-                    if active_session['has_active_session']:
-                        username = active_session['active_user']
-                        user_id_to_stop = active_session['user_id']
+                    if active_session["is_active"]:
+                        current_user = active_session["username"]
                         
                         # Gửi lệnh stop đến client
-                        command_id = f"cmd_{int(time.time())}"
-                        user_commands[user_id_to_stop] = {
-                            "id": command_id,
-                            "type": "stop_automation", 
-                            "timestamp": datetime.now().isoformat(),
-                            "requested_by": user_id  # User nào yêu cầu thoát
-                        }
+                        if current_user:
+                            command_id = f"cmd_{int(time.time())}"
+                            user_commands[user_id] = {
+                                "id": command_id,
+                                "type": "stop_automation", 
+                                "timestamp": datetime.now().isoformat(),
+                                "action": "end_session"  # Đánh dấu kết thúc phiên
+                            }
                         
-                        send_line_message(target_id, f"🚪 Đang yêu cầu {username} thoát web...")
-                        logger.info(f"🛑 Stop command sent for {username}")
+                        send_line_message(target_id, 
+                            f"🚪 Đang yêu cầu {current_user} thoát web...\n" +
+                            f"📌 Sau khi thoát, hệ thống sẽ về trạng thái standby."
+                        )
                     else:
-                        send_line_message(target_id, "❌ Không có automation nào đang chạy")
+                        send_line_message(target_id, "❌ Không có phiên làm việc nào đang chạy")
                 
+                # LỆNH STATUS
                 elif message_text in ['.status', '.trangthai', 'status']:
-                    # LỆNH .status - HIỂN THỊ CHI TIẾT
-                    active_session = get_active_session_info()
-                    if active_session['has_active_session']:
+                    session_info = get_session_info()
+                    
+                    if session_info["is_active"]:
                         status_text = f"""📊 **TRẠNG THÁI HỆ THỐNG**
 
-👤 **User đang active:** {active_session['active_user']}
-⏱️ **Thời gian chạy:** {active_session['duration']}
-🆔 **User ID:** {active_session['user_id'][:8]}...
-📅 **Bắt đầu lúc:** {active_session['start_time'][11:16] if active_session['start_time'] else 'Unknown'}
+👤 **User đang active:** {session_info['username']}
+⏱️ **Thời gian chạy:** {session_info['duration']}
+🆔 **Session ID:** {session_info['session_id'][:10]}...
+📅 **Bắt đầu lúc:** {session_info['start_time'][11:16] if session_info['start_time'] else 'Unknown'}
 
-💡 *Gõ '.thoát web' để giải phóng phiên làm việc*"""
+💡 *Gõ '.thoát web' để kết thúc phiên này*"""
                     else:
                         status_text = """📊 **TRẠNG THÁI HỆ THỐNG**
 
-🟢 **Trạng thái:** Đang rảnh - Không có user nào active
-🎯 **Sẵn sàng:** Nhận lệnh đăng nhập mới
+🟢 **Trạng thái:** STANDBY - Sẵn sàng nhận phiên mới
+🎯 **Tình trạng:** Không có phiên làm việc nào đang chạy
 
-💡 *Gõ '.login username:password' để bắt đầu*"""
+💡 *Gõ '.login username:password' để bắt đầu phiên làm việc mới*"""
                     
                     send_line_message(target_id, status_text)
                 
+                # LỆNH HELP
                 elif message_text in ['.help', 'help', 'hướng dẫn', '.huongdan']:
-                    # LỆNH .help
                     help_text = """🤖 **TICKET AUTOMATION - HƯỚNG DẪN**
 
 📋 **LỆNH SỬ DỤNG:**
-• `.login username:password` - Đăng nhập vào hệ thống
-• `.thoát web` - Dừng automation và giải phóng phiên  
-• `.status` - Xem trạng thái hệ thống chi tiết
+• `.login username:password` - Bắt đầu 1 phiên làm việc mới
+• `.thoát web` - Kết thúc phiên làm việc hiện tại
+• `.status` - Xem trạng thái hệ thống
 • `.help` - Hướng dẫn sử dụng
 
 🎯 **QUY TẮC HOẠT ĐỘNG:**
-• Chỉ **1 user** được active tại thời điểm
-• Khi có người đang sử dụng, hệ thống sẽ thông báo
-• User phải thoát web (.thoát web) để người khác sử dụng
-• Tự động giải phóng sau 2 giờ không hoạt động
+• **CHỈ 1 PHIÊN** làm việc tại thời điểm
+• **KHÔNG** cho phép login mới khi có phiên đang chạy
+• Phải **.thoát web** hoàn toàn trước khi bắt đầu phiên mới
+• Mỗi phiên độc lập từ login đến thoát
 
 ⚠️ **LƯU Ý QUAN TRỌNG:**
-• Không thể login khi có user khác đang active
-• Thông báo sẽ được gửi khi có sự kiện quan trọng
-• Hệ thống tự động phục hồi khi browser đóng đột ngột"""
+• Không thể login khi có phiên khác đang chạy
+• Hệ thống tự động gửi thông báo khi phiên bắt đầu/kết thúc
+• Thông báo sẽ hiển thị user đang sử dụng"""
                     
                     send_line_message(target_id, help_text)
-                
-                elif message_text in ['.force stop', '.admin stop']:
-                    # LỆNH FORCE STOP (CHO TRƯỜNG HỢP KHẨN CẤP)
-                    active_session = get_active_session_info()
-                    if active_session['has_active_session']:
-                        username = active_session['active_user']
-                        user_id_to_stop = active_session['user_id']
-                        
-                        # Buộc kết thúc session
-                        if force_end_session(user_id_to_stop):
-                            send_line_message(target_id, f"🔴 ĐÃ BUỘC DỪNG session của {username}. Hệ thống sẵn sàng cho phiên mới.")
-                        else:
-                            send_line_message(target_id, f"❌ Không thể buộc dừng session của {username}")
-                    else:
-                        send_line_message(target_id, "❌ Không có session nào đang active để buộc dừng")
             
+            # KHI BOT THAM GIA NHÓM
             elif event_type == 'join':
                 welcome_text = """🎉 **Bot Ticket Automation** đã tham gia nhóm!
 
-📋 **Sử dụng các lệnh sau:**
-• `.login username:password` - Đăng nhập
-• `.thoát web` - Dừng automation  
-• `.status` - Trạng thái hệ thống
-• `.help` - Hướng dẫn chi tiết
+📋 **Quy trình làm việc:**
+1️⃣ .login username:password → Bắt đầu phiên mới
+2️⃣ Hệ thống làm việc → Chỉ 1 user active
+3️⃣ .thoát web → Kết thúc phiên hiện tại
+4️⃣ STANDBY → Chờ phiên tiếp theo
 
-💡 **Lưu ý quan trọng:**
-• Tất cả lệnh chỉ hoạt động trong nhóm này
-• Chỉ 1 user được active tại thời điểm
-• User phải thoát web để người khác sử dụng
-• Tự động giải phóng phiên sau 2 giờ không hoạt động"""
+💡 **Lưu ý:** Không cho phép login mới khi có phiên đang chạy!"""
                 send_line_message(target_id, welcome_text)
         
         return jsonify({"status": "success"})
@@ -383,9 +331,9 @@ def line_webhook():
 
 # ==================== 🎯 API QUẢN LÝ SESSION ====================
 
-@app.route('/api/register_session', methods=['POST'])
-def api_register_session():
-    """API đăng ký session mới - ĐÃ SỬA ĐỂ XỬ LÝ CONFLICT"""
+@app.route('/api/start_session', methods=['POST'])
+def api_start_session():
+    """API bắt đầu phiên làm việc mới"""
     try:
         data = request.get_json()
         username = data.get('username')
@@ -394,111 +342,112 @@ def api_register_session():
         if not username or not user_id:
             return jsonify({"status": "error", "message": "Thiếu tham số"})
         
-        # 🔥 **KIỂM TRA SESSION CONFLICT - CHỈ 1 USER ĐƯỢC ACTIVE**
-        active_session = get_active_session_info()
-        if active_session['has_active_session']:
-            active_user = active_session['active_user']
-            
-            # Nếu đã có user KHÁC đang active, từ chối
-            if active_user != username:
-                return jsonify({
-                    "status": "conflict",
-                    "message": f"User {active_user} đang sử dụng phiên làm việc",
-                    "active_session": active_session
-                })
-            
-            # Nếu cùng user, cho phép relogin (ghi đè session cũ)
-            # Xóa session cũ trước
-            old_user_id = active_session['user_id']
-            if old_user_id in active_sessions:
-                del active_sessions[old_user_id]
+        # Kiểm tra xem đã có phiên nào đang chạy chưa
+        if active_session["is_active"]:
+            return jsonify({
+                "status": "conflict",
+                "message": f"Phiên làm việc đang được sử dụng bởi {active_session['username']}",
+                "current_session": get_session_info()
+            })
         
-        # Đăng ký session mới
-        active_sessions[user_id] = {
-            'username': username,
-            'start_time': datetime.now().isoformat(),
-            'last_activity': time.time(),
-            'registered_at': datetime.now().isoformat()
-        }
-        
-        # Cập nhật user_sessions
-        if user_id in user_sessions:
-            user_sessions[user_id]['status'] = 'connected'
-            user_sessions[user_id]['last_activity'] = time.time()
-        
-        # Gửi thông báo đến nhóm
-        if active_session['has_active_session'] and active_session['active_user'] == username:
-            send_to_group(f"🔄 {username} đã khởi động lại session automation")
-        else:
-            send_to_group(f"🎯 {username} đã bắt đầu session automation")
-        
-        logger.info(f"🎯 Registered session for {username}")
-        
-        return jsonify({
-            "status": "registered",
-            "message": "Đăng ký session thành công",
-            "session_info": get_active_session_info()
-        })
-        
-    except Exception as e:
-        logger.error(f"Register session error: {e}")
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/get_session_status', methods=['GET'])
-def api_get_session_status():
-    """API lấy trạng thái session"""
-    try:
-        return jsonify(get_active_session_info())
-    except Exception as e:
-        return jsonify({"has_active_session": False, "error": str(e)})
-
-@app.route('/api/clear_session/<user_id>', methods=['POST'])
-def api_clear_session(user_id):
-    """API xóa session - ĐÃ SỬA ĐỂ ĐỒNG BỘ"""
-    try:
-        if user_id in active_sessions:
-            username = active_sessions[user_id].get('username', 'Unknown')
-            del active_sessions[user_id]
-            
-            # Xóa cả user_commands nếu có
-            if user_id in user_commands:
-                del user_commands[user_id]
-                
+        # Bắt đầu phiên mới
+        success, message = start_new_session(username, user_id)
+        if success:
             # Gửi thông báo đến nhóm
-            send_to_group(f"🗑️ Session của {username} đã được xóa")
-            logger.info(f"🗑️ Cleared session for {username}")
-            return jsonify({"status": "cleared", "message": f"Đã xóa session của {username}"})
+            send_to_group(f"🎯 **BẮT ĐẦU PHIÊN MỚI**\n👤 User: {username}")
+            
+            return jsonify({
+                "status": "started",
+                "message": message,
+                "session_info": get_session_info()
+            })
         else:
-            return jsonify({"status": "not_found", "message": "Không tìm thấy session"})
+            return jsonify({"status": "error", "message": message})
+        
     except Exception as e:
+        logger.error(f"Start session error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/force_clear_session', methods=['POST'])
-def api_force_clear_session():
-    """API buộc xóa session (khi browser đóng đột ngột)"""
+@app.route('/api/end_session', methods=['POST'])
+def api_end_session():
+    """API kết thúc phiên làm việc"""
     try:
         data = request.get_json()
         username = data.get('username')
+        user_id = data.get('user_id')
         
-        # Tìm user_id theo username
-        user_id_to_clear = None
-        for uid, session in active_sessions.items():
-            if session.get('username') == username:
-                user_id_to_clear = uid
-                break
+        # Kiểm tra quyền (chỉ user đang active hoặc bất kỳ ai khi force)
+        if active_session["is_active"]:
+            # Có thể là user đang active hoặc LINE user yêu cầu thoát
+            session_user = active_session["username"]
+            
+            if username and username != session_user:
+                return jsonify({
+                    "status": "unauthorized",
+                    "message": f"Không thể kết thúc phiên của user khác. {session_user} đang active."
+                })
+            
+            # Kết thúc phiên
+            success, message = end_current_session()
+            if success:
+                # Gửi thông báo đến nhóm
+                send_to_group(f"🏁 **KẾT THÚC PHIÊN**\n👤 User: {session_user}")
+                
+                return jsonify({
+                    "status": "ended",
+                    "message": message,
+                    "session_ended": True
+                })
         
-        if user_id_to_clear:
-            return api_clear_session(user_id_to_clear)
-        else:
-            return jsonify({"status": "not_found", "message": f"Không tìm thấy session cho {username}"})
+        return jsonify({
+            "status": "no_session",
+            "message": "Không có phiên nào để kết thúc"
+        })
+        
     except Exception as e:
+        logger.error(f"End session error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-# ==================== 📢 API GỬI TIN NHẮN NHÓM ====================
+@app.route('/api/get_session_info', methods=['GET'])
+def api_get_session_info():
+    """API lấy thông tin phiên hiện tại"""
+    try:
+        return jsonify(get_session_info())
+    except Exception as e:
+        return jsonify({"is_active": False, "error": str(e)})
+
+@app.route('/api/force_end_session', methods=['POST'])
+def api_force_end_session():
+    """API buộc kết thúc phiên (khi browser đóng đột ngột)"""
+    try:
+        if active_session["is_active"]:
+            username = active_session["username"]
+            success, message = force_end_session()
+            
+            if success:
+                # Gửi thông báo đến nhóm
+                send_to_group(f"🚨 **PHIÊN BỊ ĐÓNG ĐỘT NGỘT**\n👤 User: {username}\n📌 Hệ thống đã về STANDBY")
+                
+                return jsonify({
+                    "status": "force_ended",
+                    "message": message,
+                    "session_ended": True
+                })
+        
+        return jsonify({
+            "status": "no_session",
+            "message": "Không có phiên nào để buộc kết thúc"
+        })
+        
+    except Exception as e:
+        logger.error(f"Force end session error: {e}")
+        return jsonify({"status": "error", "message": str(e)})
+
+# ==================== 📢 API GỬI TIN NHẮN ====================
 
 @app.route('/api/send_to_group', methods=['POST'])
 def api_send_to_group():
-    """API để client gửi tin nhắn đến nhóm LINE"""
+    """API gửi tin nhắn đến nhóm LINE"""
     try:
         data = request.get_json()
         message = data.get('message')
@@ -506,23 +455,7 @@ def api_send_to_group():
         if message:
             success = send_to_group(message)
             return jsonify({"status": "sent" if success else "error"})
-        return jsonify({"status": "error", "message": "Thiếu nội dung tin nhắn"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/send_message', methods=['POST'])
-def api_send_message():
-    """API để client gửi tin nhắn LINE (cá nhân hoặc nhóm)"""
-    try:
-        data = request.get_json()
-        target_id = data.get('target_id')  # Có thể là user_id hoặc group_id
-        message = data.get('message')
-        chat_type = data.get('chat_type', 'user')  # 'user' hoặc 'group'
-        
-        if target_id and message:
-            success = send_line_message(target_id, message, chat_type)
-            return jsonify({"status": "sent" if success else "error"})
-        return jsonify({"status": "error", "message": "Missing parameters"})
+        return jsonify({"status": "error", "message": "Thiếu nội dung"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -530,7 +463,7 @@ def api_send_message():
 
 @app.route('/api/register_local', methods=['POST'])
 def api_register_local():
-    """API để local client đăng ký và nhận user_id"""
+    """API local client đăng ký"""
     try:
         data = request.get_json()
         client_ip = request.remote_addr
@@ -540,58 +473,28 @@ def api_register_local():
             user_id = next(iter(user_commands))
             command = user_commands[user_id]
             
-            # Cập nhật thông tin
-            if user_id in user_sessions:
-                user_sessions[user_id]['status'] = 'connected'
-                user_sessions[user_id]['client_ip'] = client_ip
-                user_sessions[user_id]['last_connect'] = datetime.now().isoformat()
-                user_sessions[user_id]['last_activity'] = time.time()
-            
-            logger.info(f"🔗 Local client registered for {user_id}")
+            print(f"🔗 Local client đăng ký cho user_id: {user_id}, command: {command.get('type')}")
             
             return jsonify({
                 "status": "registered", 
                 "user_id": user_id,
                 "has_command": True,
-                "command": command
+                "command": command,
+                "session_info": get_session_info()
             })
         else:
             return jsonify({
                 "status": "waiting", 
-                "message": "No pending commands",
-                "active_session": get_active_session_info()
+                "message": "Chưa có lệnh nào",
+                "session_info": get_session_info()
             })
             
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/get_all_commands', methods=['GET'])
-def api_get_all_commands():
-    """API để local client lấy tất cả lệnh (cho user nào chưa có ID)"""
-    try:
-        # Trả về lệnh đầu tiên trong hàng đợi
-        if user_commands:
-            # Lấy user_id và command đầu tiên
-            user_id = next(iter(user_commands))
-            command = user_commands[user_id]
-            
-            return jsonify({
-                "has_command": True,
-                "user_id": user_id,
-                "command": command,
-                "active_session": get_active_session_info()
-            })
-        else:
-            return jsonify({
-                "has_command": False,
-                "active_session": get_active_session_info()
-            })
-    except Exception as e:
-        return jsonify({"has_command": False, "error": str(e)})
-
 @app.route('/api/get_commands/<user_id>', methods=['GET'])
 def api_get_commands(user_id):
-    """API để local client lấy lệnh"""
+    """API lấy lệnh cho user"""
     try:
         if user_id in user_commands:
             command = user_commands[user_id]
@@ -611,38 +514,18 @@ def api_complete_command():
         data = request.get_json()
         user_id = data.get('user_id')
         command_id = data.get('command_id')
+        command_type = data.get('command_type')
         
         if user_id in user_commands and user_commands[user_id]["id"] == command_id:
-            # CHỈ xóa command nếu là stop command, giữ lại start command để có thể relogin
-            command_type = user_commands[user_id].get('type')
-            if command_type == 'stop_automation':
+            # Giữ lại lệnh nếu là start để tránh bị mất
+            # Chỉ xóa khi thực sự hoàn thành phiên
+            if command_type == "session_ended":
                 del user_commands[user_id]
-                logger.info(f"✅ Completed STOP command {command_id} for {user_id}")
+                print(f"✅ Đã hoàn thành và xóa lệnh {command_id}")
             else:
-                logger.info(f"✅ Processed command {command_id} for {user_id} (keeping for potential relogin)")
+                print(f"✅ Đã xử lý lệnh {command_id} (vẫn giữ để backup)")
         
         return jsonify({"status": "completed"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/connect_local', methods=['POST'])
-def connect_local():
-    """API để local client kết nối"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        client_ip = request.remote_addr
-        
-        if user_id in user_sessions:
-            user_sessions[user_id]['status'] = 'connected'
-            user_sessions[user_id]['client_ip'] = client_ip
-            user_sessions[user_id]['last_connect'] = datetime.now().isoformat()
-            user_sessions[user_id]['last_activity'] = time.time()
-            
-            return jsonify({"status": "connected", "message": "Kết nối thành công"})
-        else:
-            return jsonify({"status": "error", "message": "User không tồn tại"})
-            
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -650,126 +533,81 @@ def connect_local():
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint tối ưu"""
-    cleanup_old_sessions()  # Dọn dẹp khi có request
-    
-    active_users = len([u for u in user_sessions.values() if u.get('status') == 'connected'])
-    pending_commands = len(user_commands)
-    active_sessions_count = len(active_sessions)
+    """Health check"""
+    cleanup_old_data()
     
     return jsonify({
         "status": "healthy",
-        "memory_optimized": True,
-        "group_only": True,
-        "session_management": "ENABLED",
-        "conflict_check": "ENABLED",
-        "active_users": active_users,
-        "pending_commands": pending_commands,
-        "active_sessions": active_sessions_count,
-        "total_sessions": len(user_sessions),
+        "server_mode": "PHIÊN LÀM VIỆC RIÊNG BIỆT",
+        "session": get_session_info(),
+        "pending_commands": len(user_commands),
         "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/admin_status', methods=['GET'])
 def admin_status():
-    """Trang trạng thái admin - ĐÃ LOẠI BỎ PHÂN QUYỀN"""
-    cleanup_old_sessions()
-    
-    status_info = {
-        "server": "LINE Ticket Automation Server",
-        "version": "4.0 - Conflict Resolved - Group Only",
-        "admin_features": "DISABLED",
-        "session_management": "ENABLED",
-        "conflict_prevention": "ENABLED",
-        "group_only": "ENABLED",
-        "line_group_id": LINE_GROUP_ID,
+    """Trạng thái admin"""
+    return jsonify({
+        "server": "LINE Ticket Automation - PHIÊN LÀM VIỆC RIÊNG BIỆT",
         "timestamp": datetime.now().isoformat(),
-        "statistics": {
-            "total_sessions": len(user_sessions),
-            "active_commands": len(user_commands),
-            "active_sessions": len(active_sessions)
-        },
-        "active_users": [],
-        "active_sessions_list": [],
-        "conflict_rules": [
-            "Chỉ 1 user được active tại thời điểm",
-            "Từ chối login khi có user khác đang active", 
-            "Cho phép relogin cùng user",
-            "Tự động giải phóng sau 2 giờ không hoạt động",
-            "Thông báo conflict chi tiết qua LINE group"
+        "active_session": get_session_info(),
+        "user_commands_count": len(user_commands),
+        "rules": [
+            "Mỗi phiên độc lập từ .login đến .thoát web",
+            "KHÔNG cho phép login mới khi có phiên đang chạy",
+            "Chỉ 1 phiên làm việc tại thời điểm",
+            "Phải thoát web hoàn toàn trước khi bắt đầu phiên mới"
         ]
-    }
-    
-    # Thông tin user đang hoạt động
-    for user_id, session in user_sessions.items():
-        if session.get('status') == 'connected':
-            status_info["active_users"].append({
-                "user_id": user_id[:8] + "...",
-                "username": session.get('username', 'N/A'),
-                "last_activity": session.get('last_activity', 0),
-                "client_ip": session.get('client_ip', 'N/A')
-            })
-    
-    # Thông tin session đang active
-    for user_id, session in active_sessions.items():
-        status_info["active_sessions_list"].append({
-            "user_id": user_id[:8] + "...",
-            "username": session.get('username', 'N/A'),
-            "start_time": session.get('start_time'),
-            "last_activity": session.get('last_activity', 0),
-            "registered_at": session.get('registered_at')
-        })
-    
-    return jsonify(status_info)
+    })
 
 @app.route('/', methods=['GET'])
 def home():
-    """Trang chủ - ĐÃ CẬP NHẬT VỚI CONFLICT RESOLUTION"""
+    """Trang chủ"""
+    session_info = get_session_info()
+    
+    if session_info["is_active"]:
+        status_message = f"ACTIVE - User: {session_info['username']} ({session_info['duration']})"
+    else:
+        status_message = "STANDBY - Chờ phiên mới"
+    
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "4.0 - Conflict Resolved - Group Only", 
-        "status": "running",
-        "mode": "GROUP_ONLY",
-        "conflict_management": "ENABLED",
+        "version": "5.0 - PHIÊN LÀM VIỆC RIÊNG BIỆT", 
+        "status": status_message,
+        "mode": "1-PHIÊN-TẠI-1-THỜI-ĐIỂM",
         "features": [
-            "Auto ticket processing",
-            "Session conflict prevention", 
-            "Single user at a time",
-            "LINE Group only commands"
-        ],
-        "rules": [
-            "Tất cả lệnh chỉ hoạt động trong nhóm",
-            "Chỉ 1 user được active tại thời điểm",
-            "Từ chối login khi có user khác đang active",
-            "Cho phép relogin cùng user",
-            "Tự động giải phóng phiên sau 2 giờ"
+            "Chỉ 1 phiên làm việc tại thời điểm",
+            "Không cho login mới khi có phiên đang chạy",
+            "Thông báo user đang sử dụng khi có login mới",
+            "Tự động reset về STANDBY khi phiên kết thúc"
         ],
         "commands_in_group": [
-            ".login username:password",
-            ".thoát web", 
-            ".status",
-            ".help"
+            ".login username:password - BẮT ĐẦU PHIÊN MỚI (chỉ khi STANDBY)",
+            ".thoát web - KẾT THÚC PHIÊN HIỆN TẠI", 
+            ".status - Trạng thái hệ thống",
+            ".help - Hướng dẫn"
         ],
-        "endpoints": {
-            "webhook": "/webhook",
-            "health": "/health", 
-            "session_status": "/api/get_session_status",
-            "register_session": "/api/register_session",
-            "send_to_group": "/api/send_to_group"
-        }
+        "current_session": session_info
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5002))
-    print(f"🚀 Starting Server với chế độ NHÓM ONLY & CONFLICT RESOLUTION trên port {port}")
-    print(f"🌐 Server URL: {SERVER_URL}")
-    print(f"👥 LINE Group ID: {LINE_GROUP_ID}")
-    print(f"🛡️ Memory-optimized keep-alive: ACTIVE")
-    print(f"🎯 Session Management: ENABLED")
-    print(f"⚡ Conflict Prevention: ENABLED")
-    print(f"📋 Commands: Chỉ hoạt động trong nhóm")
-    print(f"🔐 Rules: CHỈ 1 USER ACTIVE - TỪ CHỐI KHI CÓ USER KHÁC")
-    print(f"🔄 Relogin: CHO PHÉP CÙNG USER - TỪ CHỐI USER KHÁC")
-    print(f"🧹 Auto-cleanup: ENABLED (2 hours)")
+    print(f"""
+🚀 ========================================
+🚀 SERVER START - PHIÊN LÀM VIỆC RIÊNG BIỆT
+🚀 ========================================
+🌐 Server: {SERVER_URL}
+👥 LINE Group: {LINE_GROUP_ID}
+🛡️ Keep-alive: ACTIVE
+
+🎯 QUY TẮC HOẠT ĐỘNG:
+• CHỈ 1 PHIÊN tại thời điểm
+• KHÔNG cho login mới khi đang có phiên
+• Phải .thoát web hoàn toàn trước phiên mới
+• Tự động về STANDBY sau mỗi phiên
+
+📊 Hiện tại: {'ACTIVE' if active_session["is_active"] else 'STANDBY'}
+    """)
+    
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
