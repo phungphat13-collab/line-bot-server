@@ -385,24 +385,22 @@ def line_webhook():
                     
                     send_line_message(target_id, status_text)
                 
-                # LỆNH HELP
+                # LỆNH HELP - ĐÃ SỬA ĐỂ HIỂN THỊ MENU NHƯ YÊU CẦU
                 elif message_text in ['.help', 'help', 'hướng dẫn', '.huongdan']:
-                    help_text = """🤖 **TICKET AUTOMATION - HƯỚNG DẪN**
-
-📋 **LỆNH SỬ DỤNG:**
+                    help_text = """📋 **LỆNH SỬ DỤNG:**
 • `.login username:password` 
 - Bắt đầu 1 phiên làm việc mới
 • `.thoát web` 
 - Kết thúc phiên làm việc hiện tại
-• `.status` 
-- Xem trạng thái hệ thống
+• `.status`
+ - Xem trạng thái hệ thống
 • `.help` 
 - Hướng dẫn sử dụng
 
 🎯 **QUY TẮC HOẠT ĐỘNG:**
 • **CHỈ 1 PHIÊN** làm việc tại thời điểm
 • **KHÔNG** cho phép login mới khi có phiên đang chạy
-• Phải **.thoát web** hoàn toàn trước khi bắt đầu phiên mới
+• Phải **.thoát web** hoàn toàn trước khi bắt đầu phiên mới"""
                     
                     send_line_message(target_id, help_text)
             
