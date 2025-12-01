@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import logging
-from datetime import datetime, time as dt_time, timedelta  # THÊM TIMEDELTA Ở ĐÂY
+from datetime import datetime, time as dt_time, timedelta
 import time
 import threading
 import gc
@@ -37,11 +37,14 @@ active_session = {
     "last_activity": None
 }
 
-# LỆNH ĐANG CHỜ XỬ LÝ - FIX: key = client_user_id hoặc line_user_id
-pending_commands = {}  # Format: {"client_user_id": command} hoặc {"line_user_id": command}
+# LỆNH ĐANG CHỜ XỬ LÝ - FIX: key là client_user_id
+pending_commands = {}  # Format: {"client_user_id": command}
 
 # CLIENT REGISTRY - FIX: lưu client info
 client_registry = {}  # Format: {"CLIENT_USER_ID": {"line_user_id": "xxx", "ip": "xxx", "last_seen": "xxx"}}
+
+# TEMP COMMANDS (chờ client đăng ký)
+temp_commands = {}  # Format: {"temp_line_user_id": command}
 
 # CHỐNG SPAM MESSAGE
 message_cooldown = {}
@@ -71,6 +74,20 @@ def cleanup_old_data():
         
         for cmd_id in expired_commands:
             del pending_commands[cmd_id]
+            
+        # Xóa temp commands cũ (quá 30 phút)
+        expired_temp = []
+        for temp_id, cmd in temp_commands.items():
+            if cmd.get('timestamp'):
+                try:
+                    cmd_time = datetime.fromisoformat(cmd['timestamp'])
+                    if (datetime.now() - cmd_time).total_seconds() > 1800:
+                        expired_temp.append(temp_id)
+                except:
+                    expired_temp.append(temp_id)
+        
+        for temp_id in expired_temp:
+            del temp_commands[temp_id]
             
         # Xóa client registry cũ (quá 1 giờ không hoạt động)
         expired_clients = []
@@ -379,18 +396,18 @@ def line_webhook():
                             f"💡 Lệnh sẽ được giữ trong 30 phút"
                         )
                         
-                        # Tạm thời lưu thông tin login để chờ client
-                        temp_command_key = f"temp_{line_user_id}"
-                        pending_commands[temp_command_key] = {
+                        # Lưu vào TEMP COMMANDS chờ client
+                        temp_key = f"temp_{line_user_id}"
+                        temp_commands[temp_key] = {
                             "type": "start_automation",
                             "username": username,
                             "password": password,
                             "line_user_id": line_user_id,
                             "timestamp": datetime.now().isoformat(),
-                            "expires_at": (datetime.now() + timedelta(minutes=30)).isoformat()  # FIXED: đã có timedelta
+                            "expires_at": (datetime.now() + timedelta(minutes=30)).isoformat()
                         }
                         
-                        print(f"📨 Lệnh login cho {username} từ LINE user_id: {line_user_id[:8]}... (chờ client)")
+                        print(f"📨 Lưu temp command login cho {username} (LINE: {line_user_id[:8]}...) - chờ client")
                         
                     else:
                         send_line_reply(reply_token, "❌ Sai cú pháp! Dùng: .login username:password")
@@ -612,31 +629,46 @@ def api_register_local():
         
         print(f"📥 Nhận yêu cầu register_local từ IP: {client_ip}")
         
-        # TẠO CLIENT USER ID MỚI
+        # TẠO CLIENT USER ID MỚI (DÙNG CHO LOCAL)
         client_user_id = generate_client_user_id()
         
-        # KIỂM TRA CÓ LỆNH ĐANG CHỜ KHÔNG (tìm theo temp key)
-        temp_command_key = None
-        pending_command = None
+        # KIỂM TRA CÓ TEMP COMMAND ĐANG CHỜ KHÔNG
+        temp_key = None
+        temp_command = None
         
-        for key, cmd in pending_commands.items():
-            if key.startswith("temp_") and cmd.get('type') == 'start_automation':
-                temp_command_key = key
-                pending_command = cmd
-                break
+        # Tìm temp command còn hạn
+        current_time = datetime.now()
+        for key, cmd in list(temp_commands.items()):
+            if cmd.get('expires_at'):
+                try:
+                    expires_at = datetime.fromisoformat(cmd['expires_at'])
+                    if current_time < expires_at:
+                        temp_key = key
+                        temp_command = cmd
+                        break
+                except:
+                    continue
         
-        if pending_command:
-            # CÓ LỆNH ĐANG CHỜ - LẤY THÔNG TIN
-            username = pending_command.get('username')
-            password = pending_command.get('password')
-            line_user_id = pending_command.get('line_user_id')
+        response_data = {
+            "status": "registered", 
+            "client_user_id": client_user_id,  # 🔥 QUAN TRỌNG: trả về client_user_id
+            "server_user_id": None,  # LINE user ID (nếu có)
+            "has_command": False,
+            "session_info": get_session_info()
+        }
+        
+        if temp_command:
+            # CÓ TEMP COMMAND ĐANG CHỜ - XỬ LÝ LOGIN
+            username = temp_command.get('username')
+            password = temp_command.get('password')
+            line_user_id = temp_command.get('line_user_id')
             
             # XÓA TEMP COMMAND
-            del pending_commands[temp_command_key]
+            del temp_commands[temp_key]
             
             # TẠO COMMAND CHÍNH THỨC CHO CLIENT NÀY
             cmd_id, cmd_data = create_command_for_client(
-                client_user_id=client_user_id,
+                client_user_id=client_user_id,  # 🔥 Dùng client_user_id
                 command_type="start_automation",
                 username=username,
                 password=password
@@ -651,16 +683,13 @@ def api_register_local():
                 "command_type": "start_automation"
             }
             
-            print(f"🔗 Đăng ký client: {client_user_id[:10]}... cho LINE user: {line_user_id[:8] if line_user_id else 'N/A'}... (có lệnh đang chờ)")
-            
-            return jsonify({
-                "status": "registered", 
-                "user_id": line_user_id,      # 🔥 Trả về LINE User ID
-                "client_user_id": client_user_id,  # 🔥 Client User ID mới
+            response_data.update({
                 "has_command": True,
                 "command": cmd_data,
-                "session_info": get_session_info()
+                "server_user_id": line_user_id  # Thêm LINE user ID
             })
+            
+            print(f"🔗 Đăng ký client: {client_user_id[:10]}... cho LINE user: {line_user_id[:8] if line_user_id else 'N/A'}... (có lệnh đang chờ)")
         else:
             # KHÔNG CÓ LỆNH ĐANG CHỜ - ĐĂNG KÝ THÔNG THƯỜNG
             client_registry[client_user_id] = {
@@ -672,12 +701,7 @@ def api_register_local():
             
             print(f"🔗 Đăng ký client: {client_user_id[:10]}... (không có lệnh đang chờ)")
             
-            return jsonify({
-                "status": "registered", 
-                "client_user_id": client_user_id,
-                "has_command": False,
-                "session_info": get_session_info()
-            })
+        return jsonify(response_data)
             
     except Exception as e:
         print(f"❌ Register error: {e}")
@@ -695,6 +719,7 @@ def api_get_commands(client_user_id):
         
         if client_user_id in pending_commands:
             command = pending_commands[client_user_id]
+            print(f"📤 Gửi command đến client {client_user_id[:10]}...: {command.get('type')}")
             return jsonify({
                 "has_command": True,
                 "command": command
@@ -783,12 +808,13 @@ def health():
         "timestamp": datetime.now().isoformat(),
         "session": session_info,
         "pending_commands": len(pending_commands),
+        "temp_commands": len(temp_commands),
         "registered_clients": len(client_registry),
         "line_bot_status": "✅ Webhook Active",
         "fixes": [
             "✅ Tạo Client User ID mới mỗi lần đăng ký",
-            "✅ Lưu command với client_user_id (không dùng line_user_id)",
-            "✅ Xóa temp command khi client đăng ký",
+            "✅ Lưu command với client_user_id",
+            "✅ Temp commands chờ client",
             "✅ Xóa client registry khi kết thúc phiên"
         ]
     })
@@ -814,6 +840,7 @@ def home():
             "is_active": active_session["is_active"]
         },
         "pending_commands": len(pending_commands),
+        "temp_commands": len(temp_commands),
         "registered_clients": len(client_registry)
     })
 
@@ -833,6 +860,7 @@ if __name__ == "__main__":
 🎯 CẤU TRÚC DỮ LIỆU FIXED:
 • active_session: Quản lý phiên hiện tại
 • pending_commands: Lưu theo client_user_id
+• temp_commands: Lưu lệnh chờ client đăng ký
 • client_registry: Lưu thông tin client
 
 🔴 FLOW HOẠT ĐỘNG ĐÚNG:
@@ -847,6 +875,7 @@ if __name__ == "__main__":
 • Session: {get_session_info()['status']}
 • Active User: {get_session_info()['username'] if get_session_info()['is_active'] else 'None'}
 • Pending Commands: {len(pending_commands)}
+• Temp Commands: {len(temp_commands)}
 • Registered Clients: {len(client_registry)}
 • Time: {datetime.now().strftime('%H:%M:%S')}
 ========================================================
