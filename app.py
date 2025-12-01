@@ -1,9 +1,9 @@
-# app.py (SERVER - TỰ ĐỘNG XỬ LÝ 3 TRƯỜNG HỢP)
+# app.py (SERVER - XỬ LÝ 4 TRƯỜNG HỢP TỰ ĐỘNG)
 from flask import Flask, request, jsonify
 import requests
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, time as dt_time
 import time
 import threading
 import gc
@@ -20,6 +20,18 @@ SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 
 # ID nhóm LINE để nhận thông báo
 LINE_GROUP_ID = "ZpXWbVLYaj"  # ID từ link group
+
+# CẤU HÌNH THỜI GIAN LÀM VIỆC
+WORK_START_TIME = dt_time(6, 45)    # 6h45
+WORK_END_TIME = dt_time(21, 45)     # 21h45
+
+# CÁC CA LÀM VIỆC
+WORK_SHIFTS = [
+    {"name": "Ca 1", "start": dt_time(7, 0), "end": dt_time(11, 0)},
+    {"name": "Ca 2", "start": dt_time(11, 0), "end": dt_time(15, 0)},
+    {"name": "Ca 3", "start": dt_time(15, 0), "end": dt_time(18, 30)},
+    {"name": "Ca 4", "start": dt_time(18, 30), "end": dt_time(21, 30)}
+]
 
 # ==================== 📊 BIẾN TOÀN CỤC ====================
 # QUẢN LÝ PHIÊN LÀM VIỆC
@@ -66,20 +78,39 @@ def cleanup_old_data():
         for user_id in expired_commands:
             del user_commands[user_id]
             
-        # KIỂM TRA PHIÊN QUÁ LÂU (15 phút không hoạt động)
-        if active_session["is_active"] and active_session["last_activity"]:
-            last_active = active_session["last_activity"]
-            if isinstance(last_active, str):
-                try:
-                    last_active_time = datetime.fromisoformat(last_active)
-                    if (datetime.now() - last_active_time).total_seconds() > 900:  # 15 phút
-                        print(f"🕒 Phiên quá lâu không hoạt động, tự động kết thúc")
-                        auto_end_session("session_timeout")
-                except:
-                    pass
+        # KIỂM TRA HẾT CA LÀM VIỆC (TRƯỜNG HỢP 4)
+        check_shift_ended()
             
     except Exception as e:
         print(f"Cleanup error: {e}")
+
+def check_shift_ended():
+    """Kiểm tra nếu đã hết ca làm việc - TRƯỜNG HỢP 4"""
+    try:
+        if not active_session["is_active"]:
+            return
+            
+        current_time = datetime.now().time()
+        
+        # Kiểm tra ngoài giờ làm việc (6h45 - 21h45)
+        if current_time < WORK_START_TIME or current_time > WORK_END_TIME:
+            # Đã hết giờ làm việc
+            auto_end_session("shift_ended", "Đã hết giờ làm việc hôm nay")
+            return
+            
+        # Kiểm tra không trong ca nào
+        in_shift = False
+        for shift in WORK_SHIFTS:
+            if shift["start"] <= current_time <= shift["end"]:
+                in_shift = True
+                break
+                
+        if not in_shift:
+            # Đã hết ca làm việc
+            auto_end_session("shift_ended", "Đã hết ca làm việc")
+            
+    except Exception as e:
+        print(f"Check shift error: {e}")
 
 # ==================== 🛡️ CHỐNG SLEEP ====================
 def keep_alive():
@@ -168,35 +199,45 @@ def start_new_session(username, user_id):
     
     return True, f"Đã bắt đầu phiên làm việc cho {username}"
 
-def end_current_session(reason="normal_exit"):
+def end_current_session(reason="normal_exit", details=""):
     """Kết thúc phiên làm việc hiện tại"""
     if not active_session["is_active"]:
         return False, "Không có phiên làm việc nào đang chạy"
     
     username = active_session["username"]
     
-    # Cập nhật thông tin kết thúc
-    active_session.update({
-        "is_active": False,
+    print(f"📌 ĐANG KẾT THÚC PHIÊN: {username} - Lý do: {reason}")
+    
+    # Lưu thông tin phiên trước khi xóa
+    ended_session = {
+        "username": username,
+        "user_id": active_session["user_id"],
+        "start_time": active_session["start_time"],
+        "session_id": active_session["session_id"],
         "end_reason": reason,
-        "end_time": datetime.now().isoformat()
-    })
+        "end_time": datetime.now().isoformat(),
+        "details": details
+    }
     
     # 🔥 THÔNG BÁO LINE TÙY THEO LÝ DO
+    notification = ""
+    
     if reason == "normal_exit":
         notification = f"🚪 **{username} đã thoát web**\n📌 Hệ thống đã về STANDBY"
     elif reason == "login_failed":
-        notification = f"❌ **{username} đăng nhập thất bại**\n📌 Hệ thống đã về STANDBY"
+        notification = f"❌ **{username} đăng nhập thất bại**\n📌 {details}\n📌 Hệ thống đã về STANDBY"
     elif reason == "browser_closed_abruptly":
         notification = f"🚨 **{username} đã thoát web đột ngột**\n📌 Hệ thống đã về STANDBY"
     elif reason == "driver_init_failed":
-        notification = f"❌ **{username} - Lỗi khởi tạo trình duyệt**\n📌 Hệ thống đã về STANDBY"
+        notification = f"❌ **{username} - Lỗi khởi tạo trình duyệt**\n📌 {details}\n📌 Hệ thống đã về STANDBY"
     elif reason == "group_select_failed":
-        notification = f"❌ **{username} - Không tìm thấy nhóm LINE**\n📌 Hệ thống đã về STANDBY"
+        notification = f"❌ **{username} - Không tìm thấy nhóm LINE**\n📌 {details}\n📌 Hệ thống đã về STANDBY"
     elif reason == "session_timeout":
-        notification = f"⏰ **{username} - Phiên hết thời gian**\n📌 Hệ thống đã về STANDBY"
+        notification = f"⏰ **{username} - Phiên hết thời gian**\n📌 {details}\n📌 Hệ thống đã về STANDBY"
     elif reason == "automation_error":
-        notification = f"⚠️ **{username} - Lỗi hệ thống**\n📌 Hệ thống đã về STANDBY"
+        notification = f"⚠️ **{username} - Lỗi hệ thống**\n📌 {details}\n📌 Hệ thống đã về STANDBY"
+    elif reason == "shift_ended":
+        notification = f"🏁 **{username} - Đã hết ca làm việc**\n📌 {details}\n📌 Hệ thống đã về STANDBY"
     else:
         notification = f"🏁 **{username} - Phiên đã kết thúc**\n📌 Lý do: {reason}\n📌 Hệ thống đã về STANDBY"
     
@@ -205,22 +246,36 @@ def end_current_session(reason="normal_exit"):
     
     # Reset các thông tin active
     active_session.update({
+        "is_active": False,
         "username": None,
         "user_id": None,
         "start_time": None,
         "session_id": None,
+        "end_reason": reason,
+        "end_time": datetime.now().isoformat(),
         "last_activity": None
     })
     
-    print(f"📌 ĐÃ KẾT THÚC PHIÊN: {username} - Lý do: {reason}")
+    print(f"✅ ĐÃ KẾT THÚC PHIÊN: {username} - Lý do: {reason}")
+    
+    # Xóa lệnh của user này nếu có
+    user_id_to_delete = None
+    for uid, cmd in user_commands.items():
+        if cmd.get('username') == username:
+            user_id_to_delete = uid
+            break
+    
+    if user_id_to_delete:
+        del user_commands[user_id_to_delete]
+        print(f"🧹 Đã xóa lệnh của user: {username}")
     
     return True, f"Đã kết thúc phiên làm việc của {username}"
 
-def auto_end_session(reason="unknown"):
+def auto_end_session(reason="unknown", details=""):
     """Tự động kết thúc phiên (không cần client gọi)"""
     if active_session["is_active"]:
         username = active_session["username"]
-        end_current_session(reason)
+        end_current_session(reason, details)
         return True, f"Đã tự động kết thúc phiên của {username} (Lý do: {reason})"
     return False, "Không có phiên nào để kết thúc"
 
@@ -256,17 +311,19 @@ def get_session_info():
         "status": "ACTIVE"
     }
 
-def check_session_conflict(username):
-    """Kiểm tra xem username có đang được sử dụng không"""
-    if active_session["is_active"]:
-        return active_session["username"] != username
-    return False
+def get_current_shift():
+    """Lấy thông tin ca làm việc hiện tại"""
+    now = datetime.now().time()
+    for shift in WORK_SHIFTS:
+        if shift["start"] <= now <= shift["end"]:
+            return shift
+    return None
 
 # ==================== 🌐 WEBHOOK LINE ====================
 
 @app.route('/webhook', methods=['POST'])
 def line_webhook():
-    """Webhook nhận lệnh từ LINE"""
+    """Webhook nhận lệnh từ LINE - ĐÃ SỬA LỆNH .thoát web"""
     try:
         data = request.get_json()
         events = data.get('events', [])
@@ -319,39 +376,70 @@ def line_webhook():
                     else:
                         send_line_message(target_id, "❌ Sai cú pháp! Dùng: .login username:password")
                 
-                # LỆNH THOÁT WEB - TRƯỜNG HỢP 1
+                # 🔥 LỆNH THOÁT WEB - ĐÃ SỬA HOẠT ĐỘNG
                 elif message_text in ['.thoát web', '.thoat web', '.stop', '.dừng', '.exit']:
                     if active_session["is_active"]:
                         current_user = active_session["username"]
-                        current_user_id = active_session["user_id"]
                         
-                        # 🔥 TỰ ĐỘNG KẾT THÚC PHIÊN NGAY LẬP TỨC
-                        success, message = end_current_session("normal_exit")
+                        # 🔥 GỬI LỆNH STOP ĐẾN CLIENT TRƯỚC
+                        # Tìm user_id của user đang active
+                        active_user_id = active_session["user_id"]
+                        if active_user_id:
+                            command_id = f"cmd_stop_{int(time.time())}"
+                            user_commands[active_user_id] = {
+                                "id": command_id,
+                                "type": "stop_automation", 
+                                "timestamp": datetime.now().isoformat(),
+                                "action": "end_session",
+                                "reason": "normal_exit"
+                            }
+                            print(f"📤 Đã gửi lệnh stop đến client: {current_user}")
                         
-                        if success:
-                            send_line_message(target_id, f"🚪 Đã thoát phiên của {current_user}")
-                            print(f"🛑 Đã kết thúc phiên: {current_user}")
+                        send_line_message(target_id, f"🚪 **Đang yêu cầu {current_user} thoát web...**")
+                        
+                        # 🔥 ĐỢI 2 GIÂY RỒI TỰ ĐỘNG KẾT THÚC PHIÊN
+                        def delayed_end_session():
+                            time.sleep(2)
+                            if active_session["is_active"] and active_session["username"] == current_user:
+                                print(f"⏰ Tự động kết thúc phiên sau timeout: {current_user}")
+                                end_current_session("normal_exit")
+                        
+                        threading.Thread(target=delayed_end_session, daemon=True).start()
+                        
                     else:
                         send_line_message(target_id, "❌ Không có phiên làm việc nào đang chạy")
                 
                 # LỆNH STATUS
                 elif message_text in ['.status', '.trangthai', 'status']:
                     session_info = get_session_info()
+                    current_shift = get_current_shift()
                     
                     if session_info["is_active"]:
+                        shift_info = f"📅 **Ca hiện tại:** {current_shift['name']}" if current_shift else "📅 **Ngoài giờ làm việc**"
+                        
                         status_text = f"""📊 **TRẠNG THÁI HỆ THỐNG**
 
 👤 **User đang active:** {session_info['username']}
 ⏱️ **Thời gian chạy:** {session_info['duration']}
-🕐 **Hoạt động lúc:** {session_info['last_activity'][11:16] if session_info['last_activity'] else 'Unknown'}
+{shift_info}
 🆔 **Session ID:** {session_info['session_id'][:10]}...
 
 💡 Gõ '.thoát web' để kết thúc phiên này"""
                     else:
-                        status_text = """📊 **TRẠNG THÁI HỆ THỐNG**
+                        next_shift = None
+                        now_time = datetime.now().time()
+                        for shift in WORK_SHIFTS:
+                            if now_time < shift["start"]:
+                                next_shift = shift
+                                break
+                        
+                        shift_info = f"⏳ **Ca tiếp theo:** {next_shift['name']} ({next_shift['start'].strftime('%H:%M')})" if next_shift else "🏁 **Hết ca làm việc hôm nay**"
+                        
+                        status_text = f"""📊 **TRẠNG THÁI HỆ THỐNG**
 
 🟢 **Trạng thái:** STANDBY - Sẵn sàng nhận phiên mới
 🎯 **Tình trạng:** Không có phiên làm việc nào đang chạy
+{shift_info}
 
 💡 Gõ '.login username:password' để bắt đầu phiên làm việc mới"""
                     
@@ -372,10 +460,11 @@ def line_webhook():
 • **KHÔNG** cho phép login mới khi có phiên đang chạy
 • Phải **.thoát web** hoàn toàn trước khi bắt đầu phiên mới
 
-🔴 **3 TRƯỜNG HỢP KẾT THÚC PHIÊN (GIỐNG NHAU):**
-1. `.thoát web` - Thoát bằng lệnh → Về STANDBY
-2. **Đăng nhập lỗi** - Tự động thoát → Về STANDBY
-3. **Tắt web đột ngột** - Tự động thoát → Về STANDBY
+🔴 **4 TRƯỜNG HỢP KẾT THÚC PHIÊN (SERVER TỰ XỬ LÝ):**
+1. `.thoát web` → Server tự kết thúc → STANDBY
+2. **Đăng nhập lỗi** → Server tự kết thúc → STANDBY
+3. **Tắt web đột ngột** → Server tự kết thúc → STANDBY
+4. **Hết ca làm việc** → Server tự kết thúc → STANDBY
 
 ⚠️ **TẤT CẢ ĐỀU:** Thông báo LINE + Về STANDBY"""
                     
@@ -387,7 +476,7 @@ def line_webhook():
 📋 **QUY TRÌNH LÀM VIỆC:**
 1️⃣ .login username:password → Bắt đầu phiên mới
 2️⃣ Hệ thống làm việc → Chỉ 1 user active
-3️⃣ KẾT THÚC (3 trường hợp) → Về STANDBY
+3️⃣ KẾT THÚC (4 trường hợp) → Về STANDBY
 4️⃣ Chờ phiên tiếp theo
 
 💡 **Lưu ý:** KHÔNG cho phép login mới khi có phiên đang chạy!"""
@@ -450,19 +539,11 @@ def api_end_session():
         
         print(f"📥 Nhận thông báo end_session: reason={reason}, details={error_details}")
         
-        # 🔥 TỰ ĐỘNG KẾT THÚC PHIÊN MÀ KHÔNG CẦN KIỂM TRA
-        # Client chỉ cần thông báo lỗi, server tự xử lý
+        # 🔥 TỰ ĐỘNG KẾT THÚC PHIÊN NGAY LẬP TỨC
         if active_session["is_active"]:
-            username = active_session["username"]
-            
-            # KẾT THÚC PHIÊN NGAY LẬP TỨC
-            success, message = end_current_session(reason)
+            success, message = end_current_session(reason, error_details)
             
             if success:
-                # THÊM CHI TIẾT LỖI NẾU CÓ
-                if error_details:
-                    send_to_group(f"📝 **Chi tiết lỗi:** {error_details[:200]}")
-                
                 return jsonify({
                     "status": "ended",
                     "message": message,
@@ -479,37 +560,6 @@ def api_end_session():
         logger.error(f"End session error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/force_end_session', methods=['POST'])
-def api_force_end_session():
-    """API buộc kết thúc phiên (cho trường hợp đặc biệt)"""
-    try:
-        data = request.get_json()
-        reason = data.get('reason', 'unknown')
-        
-        print(f"📥 Nhận yêu cầu force_end_session: reason={reason}")
-        
-        # 🔥 TỰ ĐỘNG KẾT THÚC KHÔNG CẦN KIỂM TRA
-        if active_session["is_active"]:
-            username = active_session["username"]
-            success, message = auto_end_session(reason)
-            
-            if success:
-                return jsonify({
-                    "status": "force_ended",
-                    "message": message,
-                    "reason": reason,
-                    "session_ended": True
-                })
-        
-        return jsonify({
-            "status": "no_session", 
-            "message": "Không có phiên nào để buộc kết thúc"
-        })
-        
-    except Exception as e:
-        logger.error(f"Force end session error: {e}")
-        return jsonify({"status": "error", "message": str(e)})
-
 @app.route('/api/get_session_info', methods=['GET'])
 def api_get_session_info():
     """API lấy thông tin phiên hiện tại"""
@@ -518,15 +568,6 @@ def api_get_session_info():
         return jsonify(get_session_info())
     except Exception as e:
         return jsonify({"is_active": False, "error": str(e)})
-
-@app.route('/api/update_activity', methods=['POST'])
-def api_update_activity():
-    """API để client cập nhật hoạt động"""
-    try:
-        update_session_activity()
-        return jsonify({"status": "updated"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
 
 # ==================== 📢 API GỬI TIN NHẮN ====================
 
@@ -541,22 +582,6 @@ def api_send_to_group():
             success = send_to_group(message)
             return jsonify({"status": "sent" if success else "error"})
         return jsonify({"status": "error", "message": "Thiếu nội dung tin nhắn"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/send_message', methods=['POST'])
-def api_send_message():
-    """API để client gửi tin nhắn LINE"""
-    try:
-        data = request.get_json()
-        target_id = data.get('target_id')
-        message = data.get('message')
-        chat_type = data.get('chat_type', 'user')
-        
-        if target_id and message:
-            success = send_line_message(target_id, message, chat_type)
-            return jsonify({"status": "sent" if success else "error"})
-        return jsonify({"status": "error", "message": "Missing parameters"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -619,9 +644,8 @@ def api_complete_command():
         data = request.get_json()
         user_id = data.get('user_id')
         command_id = data.get('command_id')
-        command_type = data.get('command_type')
         
-        print(f"📥 Nhận complete_command: user_id={user_id}, cmd_id={command_id}, type={command_type}")
+        print(f"📥 Nhận complete_command: user_id={user_id}, cmd_id={command_id}")
         
         if user_id in user_commands and user_commands[user_id]["id"] == command_id:
             # XÓA LỆNH SAU KHI HOÀN THÀNH
@@ -640,94 +664,51 @@ def health():
     cleanup_old_data()
     
     session_info = get_session_info()
+    current_shift = get_current_shift()
     
     return jsonify({
         "status": "healthy",
         "server": "LINE Ticket Automation Server",
-        "version": "7.0 - Tự động xử lý 3 trường hợp",
+        "version": "8.0 - Xử lý 4 trường hợp tự động",
         "timestamp": datetime.now().isoformat(),
         "session": session_info,
+        "current_shift": current_shift['name'] if current_shift else "Ngoài giờ làm",
+        "work_hours": f"{WORK_START_TIME.strftime('%H:%M')} - {WORK_END_TIME.strftime('%H:%M')}",
         "pending_commands": len(user_commands),
-        "active_session": "ACTIVE" if session_info["is_active"] else "STANDBY",
-        "server_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "auto_end_session": "ENABLED",
-        "rules": [
-            "Tự động kết thúc phiên khi client thông báo lỗi",
-            "Không cần client gọi API end_session riêng",
-            "3 trường hợp xử lý giống hệt nhau",
-            "Tự động về STANDBY + thông báo LINE"
-        ]
-    })
-
-@app.route('/admin_status', methods=['GET'])
-def admin_status():
-    """Trang trạng thái admin"""
-    cleanup_old_data()
-    
-    session_info = get_session_info()
-    
-    pending_commands = []
-    for user_id, cmd in user_commands.items():
-        pending_commands.append({
-            "user_id": user_id[:8] + "...",
-            "type": cmd.get('type'),
-            "username": cmd.get('username', 'N/A'),
-            "timestamp": cmd.get('timestamp')
-        })
-    
-    return jsonify({
-        "server_info": {
-            "name": "LINE Ticket Automation Server",
-            "version": "7.0 - Tự động xử lý",
-            "line_group": LINE_GROUP_ID,
-            "url": SERVER_URL,
-            "current_time": datetime.now().isoformat()
-        },
-        "session": session_info,
-        "statistics": {
-            "pending_commands": len(user_commands),
-            "active_session": 1 if session_info["is_active"] else 0,
-            "standby": 0 if session_info["is_active"] else 1
-        },
-        "pending_commands_list": pending_commands,
-        "auto_handling_features": [
-            "✅ Tự động kết thúc khi client thông báo lỗi",
-            "✅ Tự động gửi thông báo LINE",
-            "✅ Tự động về STANDBY",
-            "✅ 3 trường hợp xử lý giống nhau"
-        ]
+        "auto_shift_check": "ENABLED",
+        "four_cases_handling": "ENABLED"
     })
 
 @app.route('/', methods=['GET'])
 def home():
     """Trang chủ"""
     session_info = get_session_info()
+    current_shift = get_current_shift()
     
     if session_info["is_active"]:
         status_message = f"🎯 **ACTIVE** - User: {session_info['username']} ({session_info['duration']})"
-        session_details = f"• User: {session_info['username']}\n• Duration: {session_info['duration']}\n• Session: {session_info['session_id'][:10]}..."
+        shift_info = f"Ca hiện tại: {current_shift['name']}" if current_shift else "Ngoài giờ làm"
     else:
         status_message = "🟢 **STANDBY** - Chờ phiên mới"
-        session_details = "• 📭 Không có phiên đang chạy\n• ✅ Sẵn sàng nhận lệnh"
+        shift_info = "Đang chờ ca làm việc"
     
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "7.0 - TỰ ĐỘNG XỬ LÝ 3 TRƯỜNG HỢP", 
+        "version": "8.0 - XỬ LÝ 4 TRƯỜNG HỢP", 
         "status": status_message,
-        "mode": "TỰ ĐỘNG KẾT THÚC + STANDBY",
-        "session_details": session_details,
+        "shift_info": shift_info,
         "auto_handling": [
             "🔴 .thoát web → Server tự kết thúc → STANDBY",
             "🔴 Đăng nhập lỗi → Server tự kết thúc → STANDBY",
-            "🔴 Browser đóng → Server tự kết thúc → STANDBY"
+            "🔴 Browser đóng → Server tự kết thúc → STANDBY",
+            "🔴 Hết ca làm việc → Server tự kết thúc → STANDBY"
         ],
-        "commands": [
-            ".login username:password - Bắt đầu phiên mới",
-            ".thoát web - Kết thúc phiên hiện tại",
-            ".status - Trạng thái hệ thống",
-            ".help - Hướng dẫn"
-        ],
-        "current_session": session_info
+        "work_shifts": [
+            f"Ca 1: {WORK_SHIFTS[0]['start'].strftime('%H:%M')} - {WORK_SHIFTS[0]['end'].strftime('%H:%M')}",
+            f"Ca 2: {WORK_SHIFTS[1]['start'].strftime('%H:%M')} - {WORK_SHIFTS[1]['end'].strftime('%H:%M')}",
+            f"Ca 3: {WORK_SHIFTS[2]['start'].strftime('%H:%M')} - {WORK_SHIFTS[2]['end'].strftime('%H:%M')}",
+            f"Ca 4: {WORK_SHIFTS[3]['start'].strftime('%H:%M')} - {WORK_SHIFTS[3]['end'].strftime('%H:%M')}"
+        ]
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
@@ -736,23 +717,30 @@ if __name__ == "__main__":
     
     print(f"""
 🚀 ========================================================
-🚀 SERVER START - TỰ ĐỘNG XỬ LÝ 3 TRƯỜNG HỢP
+🚀 SERVER START - XỬ LÝ 4 TRƯỜNG HỢP TỰ ĐỘNG
 🚀 ========================================================
 🌐 Server URL: {SERVER_URL}
 👥 LINE Group ID: {LINE_GROUP_ID}
 🛡️ Keep-alive: ACTIVE
 🧹 Auto-cleanup: ENABLED
+⏰ Auto-shift-check: ENABLED
 
 🎯 QUY TẮC HOẠT ĐỘNG:
 • CHỈ 1 PHIÊN tại thời điểm
 • KHÔNG cho login mới khi đang có phiên
 
-🔴 3 TRƯỜNG HỢP KẾT THÚC (SERVER TỰ XỬ LÝ):
+🔴 4 TRƯỜNG HỢP KẾT THÚC (SERVER TỰ XỬ LÝ):
   1. .thoát web → Server tự kết thúc → STANDBY
   2. Đăng nhập lỗi → Server tự kết thúc → STANDBY  
   3. Tắt web đột ngột → Server tự kết thúc → STANDBY
+  4. Hết ca làm việc → Server tự kết thúc → STANDBY
 
-📌 CLIENT CHỈ CẦN: Thông báo lỗi → SERVER TỰ XỬ LÝ
+📅 CA LÀM VIỆC:
+  • Ca 1: 07:00 - 11:00
+  • Ca 2: 11:00 - 15:00  
+  • Ca 3: 15:00 - 18:30
+  • Ca 4: 18:30 - 21:30
+  • Giờ làm: 06:45 - 21:45
 
 📊 TRẠNG THÁI HIỆN TẠI: {'ACTIVE' if active_session["is_active"] else 'STANDBY'}
 👤 USER ACTIVE: {active_session["username"] if active_session["is_active"] else 'None'}
