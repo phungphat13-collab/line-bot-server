@@ -390,23 +390,19 @@ def line_webhook():
                     help_text = """🤖 **TICKET AUTOMATION - HƯỚNG DẪN**
 
 📋 **LỆNH SỬ DỤNG:**
-• `.login username:password` - Bắt đầu 1 phiên làm việc mới
-• `.thoát web` - Kết thúc phiên làm việc hiện tại
-• `.status` - Xem trạng thái hệ thống
-• `.help` - Hướng dẫn sử dụng
+• `.login username:password` 
+- Bắt đầu 1 phiên làm việc mới
+• `.thoát web` 
+- Kết thúc phiên làm việc hiện tại
+• `.status` 
+- Xem trạng thái hệ thống
+• `.help` 
+- Hướng dẫn sử dụng
 
 🎯 **QUY TẮC HOẠT ĐỘNG:**
 • **CHỈ 1 PHIÊN** làm việc tại thời điểm
 • **KHÔNG** cho phép login mới khi có phiên đang chạy
 • Phải **.thoát web** hoàn toàn trước khi bắt đầu phiên mới
-
-🔴 **4 TRƯỜNG HỢP KẾT THÚC PHIÊN:**
-1. `.thoát web` → Thoát phiên + Thông báo LINE
-2. **Đăng nhập lỗi** → Thoát phiên + Thông báo LINE
-3. **Tắt web đột ngột** → Thoát phiên + Thông báo LINE
-4. **Đến mốc thời gian** → Tự động thoát + Thông báo LINE
-
-⚠️ **TẤT CẢ ĐỀU:** Reset phiên → Về STANDBY"""
                     
                     send_line_message(target_id, help_text)
             
