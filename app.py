@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import logging
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta  # THÊM TIMEDELTA Ở ĐÂY
 import time
 import threading
 import gc
@@ -387,7 +387,7 @@ def line_webhook():
                             "password": password,
                             "line_user_id": line_user_id,
                             "timestamp": datetime.now().isoformat(),
-                            "expires_at": (datetime.now() + timedelta(minutes=30)).isoformat()
+                            "expires_at": (datetime.now() + timedelta(minutes=30)).isoformat()  # FIXED: đã có timedelta
                         }
                         
                         print(f"📨 Lệnh login cho {username} từ LINE user_id: {line_user_id[:8]}... (chờ client)")
