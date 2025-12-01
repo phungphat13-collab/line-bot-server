@@ -21,7 +21,7 @@ SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 # ID nhóm LINE để nhận thông báo
 LINE_GROUP_ID = "ZpXWbVLYaj"  # ID từ link group
 
-# CẤU HÌNH THỜI GIAN LÀM VIỆC
+# CẤU HÌNG THỜI GIAN LÀM VIỆC
 WORK_START_TIME = dt_time(6, 45)    # 6h45
 WORK_END_TIME = dt_time(21, 45)     # 21h45
 
@@ -258,7 +258,7 @@ def end_current_session_without_notification(reason="client_side", details=""):
     return True, f"Đã kết thúc phiên làm việc của {username}"
 
 def check_shift_ended():
-    """Kiểm tra nếu đã hết ca làm việc - TRƯỜNG HỢP 4"""
+    """Kiểm tra nếu đã hết ca làm việc"""
     try:
         if not active_session["is_active"]:
             return
@@ -552,40 +552,128 @@ def api_start_session():
 
 @app.route('/api/end_session', methods=['POST'])
 def api_end_session():
-    """🔥 API để client thông báo kết thúc phiên - KHÔNG gửi LINE"""
+    """🔥 API để client thông báo kết thúc phiên - LUÔN RESET PHIÊN NGAY"""
     try:
         data = request.get_json()
+        username = data.get('username')  # 🔥 THÊM USERNAME để verify
         reason = data.get('reason', 'unknown')
-        error_details = data.get('error_details', '')
+        message = data.get('message', '')
         
-        print(f"📥 Nhận thông báo end_session từ client: reason={reason}, details={error_details}")
+        print(f"📥 Nhận end_session từ client: username={username}, reason={reason}")
         
-        # 🔥 CHỈ RESET PHIÊN, KHÔNG GỬI LINE
+        # 🔥 KIỂM TRA USERNAME CÓ KHỚP VỚI PHIÊN ĐANG CHẠY KHÔNG
         session_info = get_session_info()
         
         if session_info["is_active"]:
-            username = session_info["username"]
-            print(f"📌 Client yêu cầu kết thúc phiên: {username} - Lý do: {reason}")
+            active_username = session_info["username"]
             
-            # 🔥 SỬ DỤNG HÀM KHÔNG GỬI NOTIFICATION
-            success, message = end_current_session_without_notification(reason, error_details)
-            
-            if success:
+            if username and username != active_username:
                 return jsonify({
-                    "status": "ended",
-                    "message": message,
-                    "reason": reason,
-                    "session_ended": True,
-                    "note": "Server đã reset phiên. Client tự gửi thông báo LINE."
+                    "status": "user_mismatch",
+                    "message": f"Username không khớp. Active: {active_username}, Request: {username}",
+                    "session_ended": False
                 })
+            
+            print(f"📌 Client yêu cầu kết thúc phiên: {active_username} - Lý do: {reason}")
+            
+            # 🔥 RESET PHIÊN NGAY LẬP TỨC
+            active_session.update({
+                "is_active": False,
+                "username": None,
+                "user_id": None,
+                "start_time": None,
+                "session_id": None,
+                "end_reason": reason,
+                "end_time": datetime.now().isoformat(),
+                "last_activity": None
+            })
+            
+            # Xóa lệnh của user này nếu có
+            user_id_to_delete = None
+            for uid, cmd in user_commands.items():
+                if cmd.get('username') == active_username:
+                    user_id_to_delete = uid
+                    break
+            
+            if user_id_to_delete:
+                del user_commands[user_id_to_delete]
+                print(f"🧹 Đã xóa lệnh của user: {active_username}")
+            
+            print(f"✅ ĐÃ RESET PHIÊN TỪ CLIENT: {active_username}")
+            
+            return jsonify({
+                "status": "ended",
+                "message": f"Đã kết thúc phiên của {active_username}",
+                "reason": reason,
+                "session_ended": True,
+                "note": "Phiên đã được reset. Client tự gửi thông báo LINE."
+            })
         
         return jsonify({
             "status": "no_session",
-            "message": "Không có phiên nào để kết thúc"
+            "message": "Không có phiên nào để kết thúc",
+            "session_ended": False
         })
         
     except Exception as e:
         logger.error(f"End session error: {e}")
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/force_end_session', methods=['POST'])
+def api_force_end_session():
+    """🔥 API force end session - RESET PHIÊN KHÔNG CẦN VERIFY"""
+    try:
+        data = request.get_json()
+        reason = data.get('reason', 'unknown')
+        message = data.get('message', '')
+        
+        print(f"📥 Nhận force_end_session: reason={reason}")
+        
+        # 🔥 LUÔN RESET PHIÊN BẤT KỂ CÓ ACTIVE HAY KHÔNG
+        if active_session["is_active"]:
+            username = active_session["username"]
+            print(f"📌 Force end session: {username} - Lý do: {reason}")
+            
+            # RESET PHIÊN
+            active_session.update({
+                "is_active": False,
+                "username": None,
+                "user_id": None,
+                "start_time": None,
+                "session_id": None,
+                "end_reason": reason,
+                "end_time": datetime.now().isoformat(),
+                "last_activity": None
+            })
+            
+            # Xóa lệnh của user này nếu có
+            user_id_to_delete = None
+            for uid, cmd in user_commands.items():
+                if cmd.get('username') == username:
+                    user_id_to_delete = uid
+                    break
+            
+            if user_id_to_delete:
+                del user_commands[user_id_to_delete]
+                print(f"🧹 Đã xóa lệnh của user: {username}")
+            
+            print(f"✅ ĐÃ FORCE END PHIÊN: {username}")
+            
+            return jsonify({
+                "status": "force_ended",
+                "message": f"Đã force end phiên của {username}",
+                "reason": reason,
+                "session_ended": True
+            })
+        
+        return jsonify({
+            "status": "no_session",
+            "message": "Không có phiên nào để force end",
+            "session_ended": False
+        })
+        
+    except Exception as e:
+        logger.error(f"Force end session error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/api/get_session_info', methods=['GET'])
@@ -712,16 +800,16 @@ def health():
     return jsonify({
         "status": "healthy",
         "server": "LINE Ticket Automation Server",
-        "version": "11.0 - Tách biệt 3 trường hợp",
+        "version": "12.0 - Reset phiên ngay lập tức",
         "timestamp": datetime.now().isoformat(),
         "session": session_info,
         "current_shift": current_shift['name'] if current_shift else "Ngoài giờ làm",
         "pending_commands": len(user_commands),
-        "handling_mode": "SEPARATED",
+        "handling_mode": "INSTANT_RESET",
         "notification_flow": [
             "🔥 .thoát web → Server gửi LINE",
             "🔥 3 trường hợp khác → Client tự gửi LINE",
-            "✅ Tất cả đều → Reset phiên → STANDBY"
+            "✅ Tất cả đều → Reset phiên NGAY → STANDBY"
         ]
     })
 
@@ -737,18 +825,19 @@ def home():
     
     return jsonify({
         "service": "LINE Ticket Automation Server",
-        "version": "11.0 - TÁCH BIỆT THÔNG BÁO LINE", 
+        "version": "12.0 - RESET PHIÊN NGAY LẬP TỨC", 
         "status": status_message,
         "handling_strategy": [
             "🎯 .thoát web: Server xử lý toàn bộ",
-            "🎯 3 trường hợp khác: Client tự gửi LINE → Server reset",
-            "✅ Đảm bảo status luôn đúng sau khi kết thúc"
+            "🎯 3 trường hợp khác: Client gửi LINE + Server reset NGAY",
+            "✅ Đảm bảo phiên luôn reset khi có yêu cầu"
         ],
-        "api_for_client": [
-            "📤 /api/end_session - Reset phiên (không gửi LINE)",
-            "📨 /api/send_to_group - Client gửi thông báo LINE",
-            "📊 /api/get_session_info - Kiểm tra trạng thái"
-        ]
+        "api_endpoints": {
+            "reset_session": "/api/end_session - RESET với username verify",
+            "force_reset": "/api/force_end_session - RESET không cần verify",
+            "send_notification": "/api/send_to_group - Client gửi LINE",
+            "check_status": "/api/get_session_info - Kiểm tra trạng thái"
+        }
     })
 
 # ==================== 🚀 CHẠY SERVER ====================
@@ -757,7 +846,7 @@ if __name__ == "__main__":
     
     print(f"""
 🚀 ========================================================
-🚀 SERVER START - TÁCH BIỆT 3 TRƯỜNG HỢP
+🚀 SERVER START - RESET PHIÊN NGAY LẬP TỨC
 🚀 ========================================================
 🌐 Server URL: {SERVER_URL}
 👥 LINE Group ID: {LINE_GROUP_ID}
@@ -769,11 +858,15 @@ if __name__ == "__main__":
 • CHỈ 1 PHIÊN tại thời điểm
 • KHÔNG cho login mới khi có phiên đang chạy
 
-🔴 4 TRƯỜNG HỢP KẾT THÚC (TÁCH BIỆT):
+🔴 4 TRƯỜNG HỢP KẾT THÚC (RESET NGAY):
   1. .thoát web → Server tự kết thúc + Gửi LINE → STANDBY
-  2. Đăng nhập lỗi → Client gửi LINE → Server reset → STANDBY  
-  3. Tắt web đột ngột → Client gửi LINE → Server reset → STANDBY
-  4. Hết ca làm việc → Server tự reset → Client gửi LINE → STANDBY
+  2. Đăng nhập lỗi → Client gửi LINE → Server reset NGAY → STANDBY  
+  3. Tắt web đột ngột → Client gửi LINE → Server reset NGAY → STANDBY
+  4. Hết ca làm việc → Server tự reset NGAY → Client gửi LINE → STANDBY
+
+✅ API RESET HOẠT ĐỘNG:
+• /api/end_session → Reset với username verify
+• /api/force_end_session → Reset không cần verify
 
 📊 TRẠNG THÁI HIỆN TẠI: {get_session_info()['status']}
 👤 USER ACTIVE: {get_session_info()['username'] if get_session_info()['is_active'] else 'None'}
