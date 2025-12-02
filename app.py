@@ -1,24 +1,22 @@
-# local_daemon.py - 24/7 LIÊN TỤC KẾT NỐI
+# app.py (SERVER - XÓA SELENIUM IMPORT)
+from flask import Flask, request, jsonify
 import requests
-import time
-import json
-import threading
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import WebDriverException, NoSuchWindowException, TimeoutException
-import logging
-import sys
 import os
-from datetime import datetime, time as dt_time, timedelta
+import logging
+from datetime import datetime, timedelta
+import time
+import random
+import threading
 
-# ==================== ⚙️ CẤU HÌNH 24/7 ====================
+# ==================== ⚙️ CẤU HÌNH ====================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
-LINE_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
-GROUP_ID = "ZpXWbVLYaj"  # ID nhóm LINE
+LINE_GROUP_ID = "ZpXWbVLYaj"  # ID nhóm LINE
 
 # ⚠️ CHỈ 4 MỐC THỜI GIAN KẾT THÚC CA
 SHIFT_CHECK_TIMES = [
