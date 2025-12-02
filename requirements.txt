@@ -1,4 +1,6 @@
-flask==2.3.3
-selenium==4.15.0
+# requirements.txt (CHO SERVER - KHÔNG CẦN SELENIUM)
+Flask==2.3.3
 requests==2.31.0
+Werkzeug==2.3.7
 gunicorn==21.2.0
+python-dotenv==1.0.0
