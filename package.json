@@ -2,4 +2,7 @@
   "name": "line-bot-server",
   "version": "1.0.0",
   "description": "LINE Bot Server for Ticket Automation",
-  "scripts":
+  "scripts": {
+    "start": "gunicorn -w 4 -b 0.0.0.0:$PORT server:app"
+  }
+}
