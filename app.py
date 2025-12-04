@@ -8,6 +8,7 @@ import json
 import os
 from datetime import datetime
 from functools import wraps
+import traceback
 
 app = Flask(__name__)
 
@@ -94,22 +95,61 @@ def send_line_message(to_id, message, message_type="user"):
 
 def add_recent_user(user_id, source="webhook"):
     """Thêm user vào danh sách recent"""
-    with users_lock:
-        global last_user_id
-        last_user_id = user_id
-        
-        # Thêm vào danh sách
-        recent_users.append({
-            "user_id": user_id,
-            "timestamp": time.time(),
-            "source": source
-        })
-        
-        # Giới hạn chỉ lưu 20 user gần nhất
-        if len(recent_users) > 20:
-            recent_users.pop(0)
-        
-        logger.info(f"➕ Added recent user: {user_id} from {source}")
+    try:
+        with users_lock:
+            global last_user_id
+            last_user_id = user_id
+            
+            # Kiểm tra xem user đã có chưa
+            existing = False
+            for user in recent_users:
+                if user.get("user_id") == user_id:
+                    user["timestamp"] = time.time()
+                    user["source"] = source
+                    existing = True
+                    break
+            
+            if not existing:
+                recent_users.append({
+                    "user_id": user_id,
+                    "timestamp": time.time(),
+                    "source": source
+                })
+                
+                # Giới hạn chỉ lưu 50 user gần nhất
+                if len(recent_users) > 50:
+                    recent_users = recent_users[-50:]
+            
+            logger.info(f"➕ Added/Updated user: {user_id} from {source}")
+            
+    except Exception as e:
+        logger.error(f"❌ Error adding recent user: {e}")
+
+def forward_to_local_client(user_id, message_text):
+    """Chuyển tin nhắn cho local client"""
+    try:
+        with clients_lock:
+            if user_id in local_clients:
+                if 'messages' not in local_clients[user_id]:
+                    local_clients[user_id]['messages'] = []
+                
+                local_clients[user_id]['messages'].append({
+                    'text': message_text,
+                    'timestamp': time.time()
+                })
+                
+                # Giới hạn số lượng messages
+                if len(local_clients[user_id]['messages']) > 20:
+                    local_clients[user_id]['messages'] = local_clients[user_id]['messages'][-20:]
+                
+                logger.info(f"📨 Forwarded message to {user_id[:10]}...: {message_text[:50]}...")
+                return True
+            else:
+                logger.warning(f"⚠️ Cannot forward: User {user_id[:10]}... not connected")
+                return False
+    except Exception as e:
+        logger.error(f"❌ Error forwarding message: {e}")
+        return False
 
 # ==================== MONITOR THREAD ====================
 def connection_monitor():
@@ -470,15 +510,6 @@ def update_automation_status():
         return jsonify({"error": str(e)}), 500
 
 # ========== LINE WEBHOOK ==========
-@app.route('/webhook', methods=['POST'])
-def webhook():
-
-"""
-CẬP NHẬT QUAN TRỌNG CHO server.py
-Thêm đoạn code sau vào hàm webhook() để debug chi tiết
-"""
-
-# ==================== WEBHOOK FIX ====================
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     """Webhook từ LINE - FIXED VERSION"""
@@ -508,6 +539,10 @@ def webhook():
             data = request.json
             events = data.get('events', [])
             logger.info(f"📊 Events count: {len(events)}")
+            
+            if not events:
+                logger.warning("⚠️ No events in webhook")
+                return 'OK', 200
             
             # Log từng event
             for i, event in enumerate(events):
@@ -551,40 +586,8 @@ def webhook():
         
     except Exception as e:
         logger.error(f"❌ Webhook error: {type(e).__name__}: {e}")
-        import traceback
         logger.error(traceback.format_exc())
         return 'OK', 200  # Vẫn trả OK để LINE không retry
-
-def add_recent_user(user_id, source="webhook"):
-    """Thêm user vào danh sách recent - đảm bảo lưu"""
-    try:
-        with users_lock:
-            global recent_users
-            
-            # Kiểm tra xem user đã có chưa
-            existing = False
-            for user in recent_users:
-                if user.get("user_id") == user_id:
-                    user["timestamp"] = time.time()
-                    user["source"] = source
-                    existing = True
-                    break
-            
-            if not existing:
-                recent_users.append({
-                    "user_id": user_id,
-                    "timestamp": time.time(),
-                    "source": source
-                })
-                
-                # Giới hạn 50 user gần nhất
-                if len(recent_users) > 50:
-                    recent_users = recent_users[-50:]
-            
-            logger.info(f"➕ Added/Updated user: {user_id} from {source}")
-            
-    except Exception as e:
-        logger.error(f"❌ Error adding recent user: {e}")
 
 def handle_line_command(user_id, group_id, message_text, reply_token):
     """Xử lý lệnh từ LINE - LOG CHI TIẾT"""
@@ -653,6 +656,11 @@ def handle_line_command(user_id, group_id, message_text, reply_token):
                 "group" if group_id else "user"
             )
         
+        # Lệnh .users - xem user đang kết nối
+        elif message_text == '.users':
+            logger.info("   Processing: .users command")
+            handle_users_command(user_id, group_id)
+        
         # Không phải lệnh, chuyển tiếp cho local client
         else:
             logger.info(f"   Forwarding to local client: '{message_text}'")
@@ -660,92 +668,7 @@ def handle_line_command(user_id, group_id, message_text, reply_token):
             
     except Exception as e:
         logger.error(f"❌ Error handling command: {e}")
-        import traceback
         logger.error(traceback.format_exc())
-
-    
-    """Webhook từ LINE"""
-    try:
-        # Lấy signature để verify (có thể thêm sau)
-        signature = request.headers.get('X-Line-Signature', '')
-        body = request.get_data(as_text=True)
-        
-        events = request.json.get('events', [])
-        
-        for event in events:
-            # Lưu user vào recent users
-            user_id = event['source'].get('userId')
-            group_id = event['source'].get('groupId')
-            
-            if user_id:
-                add_recent_user(user_id, "line_webhook")
-            
-            # Chỉ xử lý message events
-            if event.get('type') != 'message':
-                continue
-            
-            message_type = event['message'].get('type')
-            
-            # Chỉ xử lý text messages
-            if message_type != 'text':
-                continue
-            
-            reply_token = event.get('replyToken')
-            message_text = event['message'].get('text', '').strip()
-            
-            logger.info(f"📥 LINE: {user_id} ({'group' if group_id else 'user'}): {message_text}")
-            
-            # Xử lý lệnh
-            handle_line_command(user_id, group_id, message_text, reply_token)
-        
-        return 'OK', 200
-        
-    except Exception as e:
-        logger.error(f"❌ Webhook error: {e}")
-        return 'OK', 200  # Vẫn trả OK để LINE không gửi lại
-
-def handle_line_command(user_id, group_id, message_text, reply_token):
-    """Xử lý lệnh từ LINE"""
-    
-    # Lệnh .help
-    if message_text == '.help' or message_text == 'help':
-        send_help_message(user_id, group_id)
-    
-    # Lệnh .login
-    elif message_text.startswith('.login '):
-        handle_login_command(user_id, group_id, message_text)
-    
-    # Lệnh .status
-    elif message_text == '.status':
-        handle_status_command(user_id, group_id)
-    
-    # Lệnh .queue
-    elif message_text == '.queue':
-        handle_queue_command(user_id, group_id)
-    
-    # Lệnh .myid - trả về User ID của người gửi
-    elif message_text == '.myid':
-        send_line_message(
-            user_id if not group_id else group_id,
-            f"🆔 User ID của bạn: {user_id}",
-            "group" if group_id else "user"
-        )
-    
-    # Lệnh .test - để test kết nối
-    elif message_text == '.test':
-        send_line_message(
-            user_id if not group_id else group_id,
-            f"✅ Bot đang hoạt động! User ID của bạn: {user_id[:15]}...",
-            "group" if group_id else "user"
-        )
-    
-    # Lệnh .users - xem user đang kết nối (admin)
-    elif message_text == '.users':
-        handle_users_command(user_id, group_id)
-    
-    # Forward message cho local client nếu không phải lệnh
-    else:
-        forward_to_local_client(user_id, message_text)
 
 def handle_login_command(user_id, group_id, message_text):
     """Xử lý lệnh login"""
@@ -1084,22 +1007,6 @@ def send_help_message(user_id, group_id):
         help_text,
         "group" if group_id else "user"
     )
-
-def forward_to_local_client(user_id, message_text):
-    """Chuyển tin nhắn cho local client"""
-    with clients_lock:
-        if user_id in local_clients:
-            if 'messages' not in local_clients[user_id]:
-                local_clients[user_id]['messages'] = []
-            
-            local_clients[user_id]['messages'].append({
-                'text': message_text,
-                'timestamp': time.time()
-            })
-            
-            # Giới hạn số lượng messages
-            if len(local_clients[user_id]['messages']) > 20:
-                local_clients[user_id]['messages'] = local_clients[user_id]['messages'][-20:]
 
 # ==================== MAIN ====================
 if __name__ == '__main__':
