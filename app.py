@@ -202,6 +202,75 @@ def health_check():
         "group_id": LINE_GROUP_ID
     })
 
+# ========== TEST ENDPOINTS ==========
+@app.route('/test_webhook', methods=['GET'])
+def test_webhook():
+    """Test webhook endpoint"""
+    return jsonify({
+        "status": "webhook_test",
+        "url": "https://line-bot-server-m54s.onrender.com/webhook",
+        "method": "POST",
+        "timestamp": time.time(),
+        "message": "Webhook endpoint is accessible"
+    })
+
+@app.route('/verify_webhook', methods=['GET'])
+def verify_webhook():
+    """Verify webhook setup"""
+    try:
+        url = "https://api.line.me/v2/bot/channel/webhook/endpoint"
+        headers = {
+            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return jsonify({
+                "status": "success",
+                "endpoint": data.get('endpoint'),
+                "active": data.get('active', False),
+                "verified": True,
+                "timestamp": time.time()
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "code": response.status_code,
+                "message": response.text,
+                "timestamp": time.time()
+            })
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": time.time()
+        })
+
+@app.route('/send_test_message', methods=['GET'])
+def send_test_message():
+    """Gửi test message đến group"""
+    try:
+        message = f"🔧 Test từ server!\n🕒 {datetime.now().strftime('%H:%M:%S')}\n✅ Webhook: https://line-bot-server-m54s.onrender.com/webhook"
+        
+        success = send_line_message(LINE_GROUP_ID, message)
+        
+        return jsonify({
+            "status": "success" if success else "error",
+            "message": "Test message sent" if success else "Failed to send",
+            "group_id": LINE_GROUP_ID,
+            "timestamp": time.time()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": time.time()
+        })
+
 # ========== LOCAL CLIENT REGISTRATION ==========
 @app.route('/register_group', methods=['POST'])
 def register_group():
@@ -367,38 +436,81 @@ def update_group_status():
         logger.error(f"❌ Update status error: {e}")
         return jsonify({"error": str(e)}), 500
 
-# ========== LINE WEBHOOK (CHỈ CÓ 1 ENDPOINT NÀY) ==========
+# ========== LINE WEBHOOK ==========
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook_handler():
     try:
+        logger.info("="*50)
+        logger.info("📨 WEBHOOK RECEIVED")
+        
         if request.method == 'GET':
             logger.info("✅ GET request - LINE verification")
             return 'OK', 200
         
-        data = request.json
-        events = data.get('events', [])
+        # Log request headers
+        logger.info(f"📝 Method: {request.method}")
+        logger.info(f"📝 Content-Type: {request.headers.get('Content-Type')}")
         
-        if not events:
-            return 'OK', 200
-        
-        for event in events:
-            event_type = event.get('type')
-            source = event.get('source', {})
-            group_id = source.get('groupId')
+        try:
+            data = request.json
+            logger.info(f"📦 JSON data received")
             
-            if group_id == LINE_GROUP_ID:
-                if event_type == 'message':
-                    message = event.get('message', {})
-                    if message.get('type') == 'text':
-                        message_text = message.get('text', '').strip()
-                        logger.info(f"✅ Command from {LINE_GROUP_ID}: {message_text}")
+            events = data.get('events', [])
+            logger.info(f"📊 Number of events: {len(events)}")
+            
+            if not events:
+                logger.warning("⚠️ No events in webhook")
+                return 'OK', 200
+            
+            for event in events:
+                event_type = event.get('type')
+                source = event.get('source', {})
+                source_type = source.get('type')
+                group_id = source.get('groupId')
+                user_id = source.get('userId')
+                
+                logger.info(f"🎯 Event Type: {event_type}")
+                logger.info(f"🎯 Source Type: {source_type}")
+                logger.info(f"🎯 Group ID: {group_id}")
+                logger.info(f"🎯 User ID: {user_id}")
+                
+                if group_id == LINE_GROUP_ID:
+                    logger.info(f"✅ This is our target group!")
+                    
+                    if event_type == 'message':
+                        message = event.get('message', {})
+                        message_type = message.get('type')
                         
-                        handle_group_command(group_id, message_text)
+                        logger.info(f"📝 Message Type: {message_type}")
+                        
+                        if message_type == 'text':
+                            message_text = message.get('text', '').strip()
+                            logger.info(f"💬 Message Text: {message_text}")
+                            
+                            # Xử lý lệnh
+                            handle_group_command(group_id, message_text)
+                        else:
+                            logger.info(f"ℹ️ Non-text message: {message_type}")
+                    else:
+                        logger.info(f"ℹ️ Non-message event: {event_type}")
+                else:
+                    logger.info(f"⏭️ Ignoring other group/user")
             
+            logger.info("✅ Webhook processed successfully")
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ JSON decode error: {e}")
+            logger.error(f"📝 Raw body: {request.data}")
+            return 'Bad Request', 400
+        except Exception as e:
+            logger.error(f"❌ Error processing webhook: {e}")
+            logger.error(traceback.format_exc())
+        
         return 'OK', 200
         
     except Exception as e:
-        logger.error(f"❌ Webhook error: {e}")
+        logger.error(f"❌ Webhook error: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
         return 'OK', 200
 
 def handle_group_command(group_id, message_text):
@@ -422,8 +534,11 @@ def handle_group_command(group_id, message_text):
                 group_id,
                 f"✅ Bot đang hoạt động!\n"
                 f"👥 Group ID: {group_id}\n"
-                f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}"
+                f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n"
+                f"🌐 Server: {SERVER_URL}\n"
+                f"📡 Webhook: https://line-bot-server-m54s.onrender.com/webhook"
             )
+            logger.info(f"✅ Sent test response to group")
         
         elif message_text == '.debug':
             with clients_lock:
@@ -435,7 +550,7 @@ def handle_group_command(group_id, message_text):
 • Server: ✅ Online
 • Client: {'🟢 Connected' if client_info else '🔴 Disconnected'}
 • Automation: {client_info.get('automation_status', 'idle') if client_info else 'N/A'}
-            """
+"""
             send_line_message(group_id, debug_info)
         
         elif message_text == '.id':
