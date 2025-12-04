@@ -1098,6 +1098,171 @@ def line_webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# ==================== 📨 API GỬI TIN NHẮN ====================
+
+@app.route('/api/send_message', methods=['POST'])
+def api_send_message():
+    """API gửi tin nhắn LINE - ENDPOINT BỊ THIẾU"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+        
+        target_id = data.get('user_id')
+        message = data.get('message')
+        
+        if not target_id or not message:
+            return jsonify({"status": "error", "message": "Thiếu user_id hoặc message"}), 400
+        
+        logger.info(f"📤 Gửi message đến {target_id[:10] if len(target_id) > 10 else target_id}: {message[:50]}...")
+        
+        success = send_line_message(target_id, message)
+        
+        if success:
+            return jsonify({
+                "status": "sent",
+                "message": "Đã gửi tin nhắn",
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Không thể gửi tin nhắn LINE"
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"❌ Send message error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/complete_command', methods=['POST'])
+def api_complete_command():
+    """API hoàn thành lệnh - ENDPOINT BỊ THIẾU"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+        
+        client_id = data.get('user_id')
+        command_id = data.get('command_id')
+        command_type = data.get('command_type')
+        
+        if not client_id or not command_id:
+            return jsonify({"status": "error", "message": "Thiếu user_id hoặc command_id"}), 400
+        
+        logger.info(f"✅ Complete command: client={client_id[:12] if client_id else 'unknown'}, cmd={command_id}, type={command_type}")
+        
+        # Xóa lệnh đã hoàn thành
+        with commands_lock:
+            if client_id in pending_commands:
+                if pending_commands[client_id].get("id") == command_id:
+                    del pending_commands[client_id]
+                    logger.info(f"✅ Đã xóa lệnh {command_id} ({command_type}) của client {client_id[:12]}...")
+                else:
+                    logger.warning(f"Command ID không khớp: {command_id}")
+            else:
+                logger.warning(f"Không tìm thấy lệnh cho client {client_id[:12]}...")
+        
+        return jsonify({
+            "status": "completed", 
+            "message": "Command đã được hoàn thành",
+            "timestamp": datetime.now().isoformat(),
+            "command_id": command_id
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Complete command error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ==================== 📊 API KHÁC ====================
+
+@app.route('/api/force_end_session', methods=['POST'])
+def api_force_end_session():
+    """API buộc kết thúc phiên"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+        
+        reason = data.get('reason', 'force_exit')
+        message = data.get('message', '')
+        client_id = data.get('user_id')
+        
+        logger.warning(f"⚠️ Force end session: {reason}, client: {client_id[:12] if client_id else 'N/A'}")
+        
+        with session_lock:
+            if active_session["is_active"]:
+                ended_user = active_session["username"]
+                ended_client = active_session["client_id"]
+                
+                # Xác minh client
+                if client_id and client_id != ended_client:
+                    logger.warning(f"Client mismatch: {client_id} != {ended_client}")
+                
+                # Xóa lệnh pending của client này
+                with commands_lock:
+                    if ended_client in pending_commands:
+                        del pending_commands[ended_client]
+                
+                # Reset session
+                active_session.update({
+                    "is_active": False,
+                    "username": None,
+                    "start_time": None,
+                    "session_id": None,
+                    "client_id": None,
+                    "login_time": None,
+                    "last_heartbeat": None
+                })
+                
+                logger.warning(f"⚠️ ĐÃ BUỘC KẾT THÚC PHIÊN: {ended_user} - Lý do: {reason}")
+                
+                # Cập nhật thông tin client
+                with clients_lock:
+                    if ended_client in registered_clients:
+                        registered_clients[ended_client]['current_user'] = None
+                        registered_clients[ended_client]['status'] = 'standby'
+                        registered_clients[ended_client]['session_status'] = 'force_ended'
+                
+                # Gửi thông báo LINE nếu có message
+                if message:
+                    send_to_group(message)
+                
+                return jsonify({
+                    "status": "force_ended",
+                    "message": f"Đã buộc kết thúc phiên của {ended_user}",
+                    "server_time": datetime.now().isoformat()
+                })
+        
+        return jsonify({
+            "status": "no_session",
+            "message": "Không có phiên nào để kết thúc"
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Force end session error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/test', methods=['GET'])
+def api_test():
+    """API test kết nối"""
+    return jsonify({
+        "status": "ok",
+        "service": "LINE Automation Server",
+        "endpoints": [
+            "/api/send_message (POST)",
+            "/api/complete_command (POST)", 
+            "/api/force_end_session (POST)",
+            "/api/register_local (POST)",
+            "/api/heartbeat/<client_id> (POST)",
+            "/api/get_commands/<client_id> (GET)",
+            "/api/start_session (POST)",
+            "/api/end_session (POST)"
+        ],
+        "active_session": active_session["is_active"],
+        "active_user": active_session["username"],
+        "timestamp": datetime.now().isoformat()
+    })
+
 # ==================== 🚀 KHỞI ĐỘNG ====================
 
 if __name__ == "__main__":
