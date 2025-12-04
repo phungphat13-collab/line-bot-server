@@ -69,7 +69,7 @@ def send_line_message(to_id, message):
             logger.info(f"📤 Sent to {to_id}: {message[:50]}...")
             return True
         else:
-            logger.error(f"❌ Line API error: {response.status_code}")
+            logger.error(f"❌ Line API error: {response.status_code} - {response.text}")
             return False
             
     except Exception as e:
@@ -133,7 +133,7 @@ def auto_leave_other_groups():
                 return result
                 
         else:
-            error_msg = f"❌ Không thể lấy danh sách group: {response.status_code}"
+            error_msg = f"❌ Không thể lấy danh sách group: {response.status_code} - {response.text}"
             logger.error(error_msg)
             return error_msg
             
@@ -202,7 +202,7 @@ def health_check():
         "group_id": LINE_GROUP_ID
     })
 
-# ========== TEST ENDPOINTS ==========
+# ========== DEBUG ENDPOINTS ==========
 @app.route('/test_webhook', methods=['GET'])
 def test_webhook():
     """Test webhook endpoint"""
@@ -253,7 +253,7 @@ def verify_webhook():
 def send_test_message():
     """Gửi test message đến group"""
     try:
-        message = f"🔧 Test từ server!\n🕒 {datetime.now().strftime('%H:%M:%S')}\n✅ Webhook: https://line-bot-server-m54s.onrender.com/webhook"
+        message = f"🔧 Test từ server với TOKEN MỚI!\n🕒 {datetime.now().strftime('%H:%M:%S')}\n✅ Webhook: https://line-bot-server-m54s.onrender.com/webhook"
         
         success = send_line_message(LINE_GROUP_ID, message)
         
@@ -270,6 +270,25 @@ def send_test_message():
             "message": str(e),
             "timestamp": time.time()
         })
+
+@app.route('/test_line_api', methods=['GET'])
+def test_line_api():
+    """Test LINE API token"""
+    try:
+        url = "https://api.line.me/v2/bot/info"
+        headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        return jsonify({
+            "token_test": "success" if response.status_code == 200 else "failed",
+            "status_code": response.status_code,
+            "bot_info": response.json() if response.status_code == 200 else response.text,
+            "timestamp": time.time()
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 # ========== LOCAL CLIENT REGISTRATION ==========
 @app.route('/register_group', methods=['POST'])
@@ -532,7 +551,7 @@ def handle_group_command(group_id, message_text):
         elif message_text == '.test':
             send_line_message(
                 group_id,
-                f"✅ Bot đang hoạt động!\n"
+                f"✅ Bot đang hoạt động với TOKEN MỚI!\n"
                 f"👥 Group ID: {group_id}\n"
                 f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n"
                 f"🌐 Server: {SERVER_URL}\n"
