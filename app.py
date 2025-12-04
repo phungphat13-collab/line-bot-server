@@ -13,7 +13,7 @@ app = Flask(__name__)
 # ==================== CẤU HÌNH ====================
 LINE_CHANNEL_TOKEN = "Z45KyBW+4pEZM8OJDh0qM8+8AD2/hQxZdnMSGHRfbuPBMBWF5G3FAXKyS4GqXDzXA1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5gjAofn+Z3Hq/guCI0Q6V5uw6n5l1k/gWURHvcK1+loMQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
-LINE_GROUP_ID = "MCerQE7Kk9"
+LINE_GROUP_ID = "C958b8ae79a61fdb417157a29b7030844"  # GROUP ID THỰC TẾ
 
 # ==================== BIẾN TOÀN CỤC ====================
 local_clients = {}
@@ -48,10 +48,6 @@ logger = setup_logging()
 def send_line_message(to_id, message):
     """Gửi tin nhắn LINE"""
     try:
-        if to_id != LINE_GROUP_ID:
-            logger.warning(f"⛔ Blocked sending to other group: {to_id}")
-            return False
-            
         url = 'https://api.line.me/v2/bot/message/push'
         headers = {
             'Content-Type': 'application/json',
@@ -289,6 +285,40 @@ def test_line_api():
         
     except Exception as e:
         return jsonify({"error": str(e)})
+
+# Thêm endpoint để lấy thông tin group
+@app.route('/get_group_info', methods=['GET'])
+def get_group_info():
+    """Lấy thông tin group"""
+    try:
+        url = f"https://api.line.me/v2/bot/group/{LINE_GROUP_ID}/summary"
+        headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            group_info = response.json()
+            return jsonify({
+                "status": "success",
+                "group_id": LINE_GROUP_ID,
+                "group_name": group_info.get('groupName'),
+                "picture_url": group_info.get('pictureUrl'),
+                "timestamp": time.time()
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "code": response.status_code,
+                "message": response.text,
+                "timestamp": time.time()
+            })
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": time.time()
+        })
 
 # ========== LOCAL CLIENT REGISTRATION ==========
 @app.route('/register_group', methods=['POST'])
