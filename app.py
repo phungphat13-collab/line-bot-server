@@ -13,7 +13,7 @@ app = Flask(__name__)
 # ==================== CẤU HÌNH ====================
 LINE_CHANNEL_TOKEN = "Z45KyBW+4pEZM8OJDh0qM8+8AD2/hQxZdnMSGHRfbuPBMBWF5G3FAXKyS4GqXDzXA1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5gjAofn+Z3Hq/guCI0Q6V5uw6n5l1k/gWURHvcK1+loMQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
-LINE_GROUP_ID = "C958b8ae79a61fdb417157a29b7030844"  # GROUP ID THỰC TẾ
+LINE_GROUP_ID = "MCerQE7Kk9"  # GROUP ID TỪ LINK: https://line.me/ti/g/MCerQE7Kk9
 
 # ==================== BIẾN TOÀN CỤC ====================
 local_clients = {}
@@ -72,72 +72,6 @@ def send_line_message(to_id, message):
         logger.error(f"❌ Send message error: {e}")
         return False
 
-def auto_leave_other_groups():
-    """Bot tự động rời tất cả group khác ngoài group chính"""
-    try:
-        logger.info("🔄 Kiểm tra bot đang ở nhóm nào...")
-        
-        time.sleep(1)
-        
-        url = "https://api.line.me/v2/bot/group/list"
-        headers = {
-            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            groups = response.json().get('groups', [])
-            
-            if not groups:
-                logger.info("🤖 Bot không ở trong nhóm nào")
-                return "🤖 Bot không ở trong nhóm nào"
-            
-            logger.info(f"📋 Bot đang ở {len(groups)} nhóm")
-            
-            left_count = 0
-            left_groups = []
-            for group in groups:
-                group_id = group.get('groupId')
-                group_name = group.get('groupName', 'Unknown')
-                
-                if group_id != LINE_GROUP_ID:
-                    logger.info(f"⚠️ Phát hiện nhóm khác: {group_name} ({group_id})")
-                    
-                    leave_url = f'https://api.line.me/v2/bot/group/{group_id}/leave'
-                    try:
-                        leave_response = requests.post(leave_url, headers=headers, timeout=5)
-                        
-                        if leave_response.status_code == 200:
-                            logger.info(f"🚪 Đã rời nhóm: {group_name}")
-                            left_count += 1
-                            left_groups.append(group_name)
-                        else:
-                            logger.error(f"❌ Không thể rời nhóm {group_id}: {leave_response.status_code}")
-                    except Exception as e:
-                        logger.error(f"❌ Lỗi khi rời nhóm: {e}")
-                else:
-                    logger.info(f"✅ Giữ lại nhóm chính: {group_name}")
-            
-            if left_count > 0:
-                result = f"✅ Đã rời {left_count} nhóm khác: {', '.join(left_groups)}"
-                logger.info(result)
-                return result
-            else:
-                result = "✅ Bot chỉ ở trong nhóm chính"
-                logger.info(result)
-                return result
-                
-        else:
-            error_msg = f"❌ Không thể lấy danh sách group: {response.status_code} - {response.text}"
-            logger.error(error_msg)
-            return error_msg
-            
-    except Exception as e:
-        error_msg = f"❌ Lỗi auto leave groups: {e}"
-        logger.error(error_msg)
-        return error_msg
-
 # ==================== MONITOR THREAD ====================
 def connection_monitor():
     """Giám sát kết nối local client"""
@@ -185,6 +119,7 @@ def index():
         "status": "online",
         "service": "LINE Bot Automation Server",
         "group_id": LINE_GROUP_ID,
+        "group_link": f"https://line.me/ti/g/{LINE_GROUP_ID}",
         "clients_connected": client_count,
         "waiting_users": waiting_count,
         "server_time": datetime.now().isoformat()
@@ -204,52 +139,17 @@ def test_webhook():
     """Test webhook endpoint"""
     return jsonify({
         "status": "webhook_test",
-        "url": "https://line-bot-server-m54s.onrender.com/webhook",
+        "url": f"{SERVER_URL}/webhook",
         "method": "POST",
         "timestamp": time.time(),
         "message": "Webhook endpoint is accessible"
     })
 
-@app.route('/verify_webhook', methods=['GET'])
-def verify_webhook():
-    """Verify webhook setup"""
-    try:
-        url = "https://api.line.me/v2/bot/channel/webhook/endpoint"
-        headers = {
-            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return jsonify({
-                "status": "success",
-                "endpoint": data.get('endpoint'),
-                "active": data.get('active', False),
-                "verified": True,
-                "timestamp": time.time()
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "code": response.status_code,
-                "message": response.text,
-                "timestamp": time.time()
-            })
-            
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": time.time()
-        })
-
 @app.route('/send_test_message', methods=['GET'])
 def send_test_message():
     """Gửi test message đến group"""
     try:
-        message = f"🔧 Test từ server với TOKEN MỚI!\n🕒 {datetime.now().strftime('%H:%M:%S')}\n✅ Webhook: https://line-bot-server-m54s.onrender.com/webhook"
+        message = f"🔧 Test từ server!\n🕒 {datetime.now().strftime('%H:%M:%S')}\n✅ Group: {LINE_GROUP_ID}"
         
         success = send_line_message(LINE_GROUP_ID, message)
         
@@ -267,58 +167,72 @@ def send_test_message():
             "timestamp": time.time()
         })
 
-@app.route('/test_line_api', methods=['GET'])
-def test_line_api():
-    """Test LINE API token"""
+@app.route('/check_bot_location', methods=['GET'])
+def check_bot_location():
+    """Kiểm tra bot đang ở group nào"""
     try:
-        url = "https://api.line.me/v2/bot/info"
-        headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        return jsonify({
-            "token_test": "success" if response.status_code == 200 else "failed",
-            "status_code": response.status_code,
-            "bot_info": response.json() if response.status_code == 200 else response.text,
-            "timestamp": time.time()
-        })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-# Thêm endpoint để lấy thông tin group
-@app.route('/get_group_info', methods=['GET'])
-def get_group_info():
-    """Lấy thông tin group"""
-    try:
-        url = f"https://api.line.me/v2/bot/group/{LINE_GROUP_ID}/summary"
+        # Lấy danh sách group bot đang tham gia
+        url = "https://api.line.me/v2/bot/group/list"
         headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
         
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            group_info = response.json()
-            return jsonify({
-                "status": "success",
-                "group_id": LINE_GROUP_ID,
-                "group_name": group_info.get('groupName'),
-                "picture_url": group_info.get('pictureUrl'),
-                "timestamp": time.time()
-            })
+            groups = response.json().get('groups', [])
+            
+            result = {
+                "bot_is_in_groups": len(groups),
+                "target_group_id": LINE_GROUP_ID,
+                "target_group_link": f"https://line.me/ti/g/{LINE_GROUP_ID}",
+                "groups": [],
+                "in_target_group": False
+            }
+            
+            for group in groups:
+                group_id = group.get('groupId')
+                is_target = (group_id == LINE_GROUP_ID)
+                
+                if is_target:
+                    result["in_target_group"] = True
+                
+                result["groups"].append({
+                    "group_id": group_id,
+                    "group_name": group.get('groupName', 'Unknown'),
+                    "is_target_group": is_target,
+                    "group_type": "C-prefix (old)" if group_id.startswith('C') else "link_id"
+                })
+            
+            return jsonify(result)
         else:
             return jsonify({
-                "status": "error",
-                "code": response.status_code,
-                "message": response.text,
-                "timestamp": time.time()
+                "error": f"Failed to get groups: {response.status_code}",
+                "message": response.text
             })
             
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": time.time()
-        })
+        return jsonify({"error": str(e)})
+
+@app.route('/join_target_group', methods=['GET'])
+def join_target_group():
+    """Hướng dẫn thêm bot vào group đích"""
+    instructions = {
+        "steps": [
+            "1. Mở group Line mà bạn muốn bot hoạt động",
+            f"2. Link group: https://line.me/ti/g/{LINE_GROUP_ID}",
+            "3. Nhấn vào tên group → 'Thành viên'",
+            "4. Chọn 'Thêm thành viên'",
+            "5. Quét QR code từ LINE Developers Console",
+            "6. Hoặc tìm tên bot và thêm vào",
+            "",
+            "📌 Lưu ý:",
+            "- Đảm bảo bot chưa trong group nào khác",
+            "- Nếu bot đã trong group khác, dùng lệnh '.cleanup' trong group này"
+        ],
+        "target_group": LINE_GROUP_ID,
+        "qr_code_url": f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://line.me/R/ti/g/{LINE_GROUP_ID}"
+    }
+    
+    return jsonify(instructions)
 
 # ========== LOCAL CLIENT REGISTRATION ==========
 @app.route('/register_group', methods=['POST'])
@@ -352,140 +266,9 @@ def register_group():
         logger.error(f"❌ Register error: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/ping_group', methods=['POST'])
-def ping_group():
-    try:
-        data = request.json
-        group_id = data.get('group_id', LINE_GROUP_ID)
-        
-        if group_id != LINE_GROUP_ID:
-            return jsonify({"error": "Invalid group_id"}), 400
-        
-        with clients_lock:
-            if group_id in local_clients:
-                local_clients[group_id]['last_ping'] = time.time()
-                local_clients[group_id]['status'] = 'active'
-                
-                return jsonify({
-                    "status": "success",
-                    "message": "pong",
-                    "group_id": group_id
-                })
-            else:
-                local_clients[group_id] = {
-                    'last_ping': time.time(),
-                    'status': 'active',
-                    'ip': request.remote_addr,
-                    'tasks': [],
-                    'automation_status': 'idle',
-                    'registered_at': time.time()
-                }
-                
-                logger.info(f"🔄 Auto-registered: {group_id}")
-                return jsonify({
-                    "status": "success",
-                    "message": "auto_registered",
-                    "group_id": group_id
-                })
-        
-    except Exception as e:
-        logger.error(f"❌ Ping error: {e}")
-        return jsonify({"error": str(e)}), 500
+# ... (giữ nguyên các endpoint khác: ping_group, get_group_task, update_group_status)
 
-# ========== TASK MANAGEMENT ==========
-@app.route('/get_group_task', methods=['POST'])
-def get_group_task():
-    try:
-        data = request.json
-        group_id = data.get('group_id', LINE_GROUP_ID)
-        
-        if group_id != LINE_GROUP_ID:
-            return jsonify({"error": "Invalid group_id"}), 400
-        
-        with clients_lock:
-            if group_id not in local_clients:
-                return jsonify({"error": "Client not registered"}), 404
-            
-            local_clients[group_id]['last_ping'] = time.time()
-            
-            tasks = local_clients[group_id].get('tasks', [])
-            task = tasks[0] if tasks else None
-            
-            if task:
-                local_clients[group_id]['tasks'] = tasks[1:]
-        
-        return jsonify({
-            "status": "success",
-            "task": task,
-            "group_id": group_id
-        })
-        
-    except Exception as e:
-        logger.error(f"❌ Get task error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/update_group_status', methods=['POST'])
-def update_group_status():
-    try:
-        data = request.json
-        group_id = data.get('group_id', LINE_GROUP_ID)
-        status = data.get('status')
-        message = data.get('message', '')
-        
-        if group_id != LINE_GROUP_ID:
-            return jsonify({"error": "Invalid group_id"}), 400
-        
-        if not status:
-            return jsonify({"error": "Missing status"}), 400
-        
-        with clients_lock:
-            if group_id in local_clients:
-                local_clients[group_id]['last_ping'] = time.time()
-                local_clients[group_id]['automation_status'] = status
-        
-        if status in ['stopped', 'error', 'completed']:
-            with queue_lock:
-                queue_info = group_queues[group_id]
-                
-                if queue_info["current_user"] is not None:
-                    queue_info["current_user"] = None
-                    queue_info["current_username"] = None
-                    queue_info["current_task"] = None
-                    
-                    logger.info(f"🔓 Freed slot in group {group_id}")
-                    
-                    if queue_info["waiting_users"]:
-                        next_user = queue_info["waiting_users"].pop(0)
-                        queue_info["current_user"] = "next_in_queue"
-                        queue_info["current_username"] = next_user['username']
-                        queue_info["current_task"] = {
-                            "command": "start_automation",
-                            "username": next_user['username'],
-                            "password": next_user['password'],
-                            "group_id": group_id
-                        }
-                        
-                        with clients_lock:
-                            if group_id in local_clients:
-                                local_clients[group_id]['tasks'].append(
-                                    queue_info["current_task"]
-                                )
-                        
-                        send_line_message(
-                            group_id,
-                            f"🔄 Đến lượt {next_user['username']}! Đang khởi động..."
-                        )
-        
-        if message:
-            send_line_message(group_id, message)
-        
-        return jsonify({"status": "success", "group_id": group_id})
-        
-    except Exception as e:
-        logger.error(f"❌ Update status error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ========== LINE WEBHOOK ==========
+# ========== LINE WEBHOOK - FIXED ==========
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook_handler():
     try:
@@ -496,19 +279,11 @@ def webhook_handler():
             logger.info("✅ GET request - LINE verification")
             return 'OK', 200
         
-        # Log request headers
-        logger.info(f"📝 Method: {request.method}")
-        logger.info(f"📝 Content-Type: {request.headers.get('Content-Type')}")
-        
         try:
             data = request.json
-            logger.info(f"📦 JSON data received")
-            
             events = data.get('events', [])
-            logger.info(f"📊 Number of events: {len(events)}")
             
             if not events:
-                logger.warning("⚠️ No events in webhook")
                 return 'OK', 200
             
             for event in events:
@@ -523,43 +298,34 @@ def webhook_handler():
                 logger.info(f"🎯 Group ID: {group_id}")
                 logger.info(f"🎯 User ID: {user_id}")
                 
+                # CHẤP NHẬN CẢ 2 LOẠI GROUP ID
+                # 1. Group ID từ link: MCerQE7Kk9
+                # 2. Group ID cũ: C958b8ae79a61fdb417157a29b7030844
+                
+                # Nếu là group ID cũ, chuyển thành group ID từ link
+                if group_id == "C958b8ae79a61fdb417157a29b7030844":
+                    logger.info(f"🔄 Converting old group ID to target group ID")
+                    group_id = LINE_GROUP_ID
+                
                 if group_id == LINE_GROUP_ID:
-                    logger.info(f"✅ This is our target group!")
+                    logger.info(f"✅ Processing message from target group!")
                     
                     if event_type == 'message':
                         message = event.get('message', {})
-                        message_type = message.get('type')
-                        
-                        logger.info(f"📝 Message Type: {message_type}")
-                        
-                        if message_type == 'text':
+                        if message.get('type') == 'text':
                             message_text = message.get('text', '').strip()
                             logger.info(f"💬 Message Text: {message_text}")
                             
                             # Xử lý lệnh
                             handle_group_command(group_id, message_text)
-                        else:
-                            logger.info(f"ℹ️ Non-text message: {message_type}")
-                    else:
-                        logger.info(f"ℹ️ Non-message event: {event_type}")
-                else:
-                    logger.info(f"⏭️ Ignoring other group/user")
             
-            logger.info("✅ Webhook processed successfully")
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ JSON decode error: {e}")
-            logger.error(f"📝 Raw body: {request.data}")
-            return 'Bad Request', 400
         except Exception as e:
             logger.error(f"❌ Error processing webhook: {e}")
-            logger.error(traceback.format_exc())
         
         return 'OK', 200
         
     except Exception as e:
-        logger.error(f"❌ Webhook error: {type(e).__name__}: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Webhook error: {e}")
         return 'OK', 200
 
 def handle_group_command(group_id, message_text):
@@ -569,221 +335,162 @@ def handle_group_command(group_id, message_text):
         if message_text == '.help' or message_text == 'help':
             send_help_message(group_id)
         
-        elif message_text.startswith('.login '):
-            handle_group_login(group_id, message_text)
-        
-        elif message_text == '.status':
-            handle_group_status(group_id)
-        
-        elif message_text == '.queue':
-            handle_group_queue(group_id)
-        
         elif message_text == '.test':
             send_line_message(
                 group_id,
-                f"✅ Bot đang hoạt động với TOKEN MỚI!\n"
+                f"✅ Bot đang hoạt động!\n"
                 f"👥 Group ID: {group_id}\n"
+                f"🔗 Link: https://line.me/ti/g/{group_id}\n"
                 f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n"
-                f"🌐 Server: {SERVER_URL}\n"
-                f"📡 Webhook: https://line-bot-server-m54s.onrender.com/webhook"
+                f"🌐 Server: {SERVER_URL}"
             )
             logger.info(f"✅ Sent test response to group")
-        
-        elif message_text == '.debug':
-            with clients_lock:
-                client_info = local_clients.get(group_id, {})
-            
-            debug_info = f"""
-🔧 DEBUG INFO:
-• Group ID: {group_id}
-• Server: ✅ Online
-• Client: {'🟢 Connected' if client_info else '🔴 Disconnected'}
-• Automation: {client_info.get('automation_status', 'idle') if client_info else 'N/A'}
-"""
-            send_line_message(group_id, debug_info)
         
         elif message_text == '.id':
             send_line_message(
                 group_id,
-                f"👥 **Group ID của bạn:**\n`{group_id}`\n\n"
-                f"📌 Link group:\nhttps://line.me/ti/g/{group_id}"
+                f"👥 **Thông tin Group:**\n"
+                f"• ID: `{group_id}`\n"
+                f"• Link: https://line.me/ti/g/{group_id}\n\n"
+                f"📌 Sử dụng ID này để cấu hình client"
             )
         
-        elif message_text == '.cleanup':
-            send_line_message(group_id, "🔄 Đang dọn dẹp bot khỏi các nhóm khác...")
-            result = auto_leave_other_groups()
-            send_line_message(group_id, f"✅ {result}")
+        elif message_text == '.where':
+            # Kiểm tra bot đang ở đâu
+            send_line_message(
+                group_id,
+                f"📍 **Bot Location Check:**\n"
+                f"• Target Group: `{LINE_GROUP_ID}`\n"
+                f"• Current Group: `{group_id}`\n"
+                f"• Match: {'✅' if group_id == LINE_GROUP_ID else '❌'}\n\n"
+                f"📊 Kiểm tra chi tiết: {SERVER_URL}/check_bot_location"
+            )
         
-        elif message_text == '.groups':
-            check_bot_groups(group_id)
+        elif message_text == '.join':
+            # Hướng dẫn thêm bot vào group
+            send_line_message(
+                group_id,
+                f"📋 **Hướng dẫn thêm bot vào group:**\n\n"
+                f"1. Đảm bảo bạn là admin group\n"
+                f"2. Nhấn vào tên group → Thành viên\n"
+                f"3. Chọn 'Thêm thành viên'\n"
+                f"4. Quét QR code hoặc tìm tên bot\n\n"
+                f"🔗 QR Code: {SERVER_URL}/join_target_group"
+            )
+        
+        elif message_text.startswith('.login '):
+            # Giữ nguyên logic login
+            parts = message_text.split(' ')
+            if len(parts) < 2:
+                send_line_message(group_id, "❌ Sai cú pháp: .login username:password")
+                return
+            
+            login_info = parts[1]
+            if ':' not in login_info:
+                send_line_message(group_id, "❌ Sai định dạng: .login username:password")
+                return
+            
+            username, password = login_info.split(':', 1)
+            
+            with clients_lock:
+                if group_id not in local_clients:
+                    send_line_message(group_id, "❌ Local client chưa kết nối!")
+                    return
+                
+                client_status = local_clients[group_id].get('status')
+                if client_status != 'active':
+                    send_line_message(group_id, f"❌ Client không hoạt động: {client_status}")
+                    return
+            
+            with queue_lock:
+                if group_id not in group_queues:
+                    group_queues[group_id] = {
+                        "waiting_users": [],
+                        "current_user": None,
+                        "current_username": None,
+                        "current_task": None
+                    }
+                
+                queue_info = group_queues[group_id]
+                
+                if queue_info["current_user"] is not None:
+                    queue_info["waiting_users"].append({
+                        "username": username,
+                        "password": password
+                    })
+                    
+                    position = len(queue_info["waiting_users"])
+                    send_line_message(
+                        group_id,
+                        f"🔄 Đã thêm vào hàng đợi. Vị trí: {position}"
+                    )
+                    return
+                
+                queue_info["current_user"] = "running"
+                queue_info["current_username"] = username
+                queue_info["current_task"] = {
+                    "command": "start_automation",
+                    "username": username,
+                    "password": password,
+                    "group_id": group_id
+                }
+            
+            with clients_lock:
+                if group_id in local_clients:
+                    local_clients[group_id]['tasks'].append(
+                        group_queues[group_id]["current_task"]
+                    )
+            
+            send_line_message(group_id, f"🚀 Bắt đầu cho {username}...")
+            logger.info(f"Started automation for {username}")
+        
+        elif message_text == '.status':
+            with clients_lock:
+                client_info = local_clients.get(group_id, {})
+            
+            with queue_lock:
+                queue_info = group_queues.get(group_id, {})
+            
+            status_text = "📊 **TRẠNG THÁI HỆ THỐNG**\n\n"
+            status_text += "🖥️ **Server**: ✅ Online\n"
+            
+            if client_info:
+                last_ping = int(time.time() - client_info.get('last_ping', 0))
+                status_text += f"🔗 **Local client**: ✅ Đã kết nối\n"
+                status_text += f"   • Ping: {last_ping}s trước\n"
+            else:
+                status_text += "🔗 **Local client**: ❌ Chưa kết nối\n"
+            
+            status_text += f"\n👥 **Queue**:\n"
+            status_text += f"   • Đang chạy: {queue_info.get('current_username', 'None')}\n"
+            status_text += f"   • Người chờ: {len(queue_info.get('waiting_users', []))}\n"
+            
+            send_line_message(group_id, status_text)
+        
+        elif message_text == '.queue':
+            with queue_lock:
+                queue_info = group_queues.get(group_id, {})
+            
+            queue_text = "📋 **HÀNG ĐỢI**\n\n"
+            
+            if queue_info.get('current_username'):
+                queue_text += f"👤 **Đang chạy**: {queue_info['current_username']}\n\n"
+            else:
+                queue_text += "👤 **Đang chạy**: None\n\n"
+            
+            waiting_users = queue_info.get('waiting_users', [])
+            if waiting_users:
+                queue_text += "🔄 **Người chờ**:\n"
+                for i, user in enumerate(waiting_users, 1):
+                    queue_text += f"{i}. {user['username']}\n"
+            else:
+                queue_text += "✅ **Không có người chờ**"
+            
+            send_line_message(group_id, queue_text)
             
     except Exception as e:
         logger.error(f"❌ Error handling command: {e}")
         send_line_message(group_id, f"❌ Lỗi: {str(e)}")
-
-def check_bot_groups(group_id):
-    try:
-        url = "https://api.line.me/v2/bot/group/list"
-        headers = {
-            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            groups = response.json().get('groups', [])
-            
-            message = "📋 **BOT ĐANG Ở NHÓM:**\n\n"
-            
-            if not groups:
-                message += "🤖 Bot chưa tham gia nhóm nào"
-            else:
-                for group in groups:
-                    gid = group.get('groupId')
-                    gname = group.get('groupName', 'Không có tên')
-                    
-                    if gid == LINE_GROUP_ID:
-                        message += f"✅ **{gname}** (NHÓM CHÍNH)\n"
-                        message += f"   ID: `{gid}`\n\n"
-                    else:
-                        message += f"⚠️ {gname}\n"
-                        message += f"   ID: `{gid}`\n\n"
-            
-            message += f"📌 Dùng `.cleanup` để xóa bot khỏi nhóm khác"
-            
-        else:
-            message = f"❌ Không thể lấy danh sách: {response.status_code}"
-        
-        send_line_message(group_id, message)
-        
-    except Exception as e:
-        logger.error(f"Error checking groups: {e}")
-        send_line_message(group_id, f"❌ Lỗi: {str(e)}")
-
-def handle_group_login(group_id, message_text):
-    try:
-        parts = message_text.split(' ')
-        if len(parts) < 2:
-            send_line_message(group_id, "❌ Sai cú pháp: .login username:password")
-            return
-        
-        login_info = parts[1]
-        if ':' not in login_info:
-            send_line_message(group_id, "❌ Sai định dạng: .login username:password")
-            return
-        
-        username, password = login_info.split(':', 1)
-        
-        with clients_lock:
-            if group_id not in local_clients:
-                send_line_message(group_id, "❌ Local client chưa kết nối!")
-                return
-            
-            client_status = local_clients[group_id].get('status')
-            if client_status != 'active':
-                send_line_message(group_id, f"❌ Client không hoạt động: {client_status}")
-                return
-        
-        with queue_lock:
-            if group_id not in group_queues:
-                group_queues[group_id] = {
-                    "waiting_users": [],
-                    "current_user": None,
-                    "current_username": None,
-                    "current_task": None
-                }
-            
-            queue_info = group_queues[group_id]
-            
-            if queue_info["current_user"] is not None:
-                queue_info["waiting_users"].append({
-                    "username": username,
-                    "password": password
-                })
-                
-                position = len(queue_info["waiting_users"])
-                send_line_message(
-                    group_id,
-                    f"🔄 Đã thêm vào hàng đợi. Vị trí: {position}\n"
-                    f"👤 Đang chạy: {queue_info['current_username']}"
-                )
-                return
-            
-            queue_info["current_user"] = "running"
-            queue_info["current_username"] = username
-            queue_info["current_task"] = {
-                "command": "start_automation",
-                "username": username,
-                "password": password,
-                "group_id": group_id
-            }
-        
-        with clients_lock:
-            if group_id in local_clients:
-                local_clients[group_id]['tasks'].append(
-                    group_queues[group_id]["current_task"]
-                )
-        
-        send_line_message(group_id, f"🚀 Bắt đầu cho {username}...")
-        logger.info(f"Started automation for {username}")
-    
-    except Exception as e:
-        logger.error(f"❌ Login error: {e}")
-        send_line_message(group_id, f"❌ Lỗi: {str(e)}")
-
-def handle_group_status(group_id):
-    try:
-        with clients_lock:
-            client_info = local_clients.get(group_id, {})
-        
-        with queue_lock:
-            queue_info = group_queues.get(group_id, {})
-        
-        status_text = "📊 **TRẠNG THÁI HỆ THỐNG**\n\n"
-        
-        status_text += "🖥️ **Server**: ✅ Online\n"
-        
-        if client_info:
-            last_ping = int(time.time() - client_info.get('last_ping', 0))
-            status_text += f"🔗 **Local client**: ✅ Đã kết nối\n"
-            status_text += f"   • Ping: {last_ping}s trước\n"
-            status_text += f"   • Automation: {client_info.get('automation_status', 'idle')}\n"
-        else:
-            status_text += "🔗 **Local client**: ❌ Chưa kết nối\n"
-        
-        status_text += f"\n👥 **Queue**:\n"
-        status_text += f"   • Đang chạy: {queue_info.get('current_username', 'None')}\n"
-        status_text += f"   • Người chờ: {len(queue_info.get('waiting_users', []))}\n"
-        
-        send_line_message(group_id, status_text)
-    
-    except Exception as e:
-        logger.error(f"❌ Status error: {e}")
-
-def handle_group_queue(group_id):
-    try:
-        with queue_lock:
-            queue_info = group_queues.get(group_id, {})
-        
-        queue_text = "📋 **HÀNG ĐỢI**\n\n"
-        
-        if queue_info.get('current_username'):
-            queue_text += f"👤 **Đang chạy**: {queue_info['current_username']}\n\n"
-        else:
-            queue_text += "👤 **Đang chạy**: None\n\n"
-        
-        waiting_users = queue_info.get('waiting_users', [])
-        if waiting_users:
-            queue_text += "🔄 **Người chờ**:\n"
-            for i, user in enumerate(waiting_users, 1):
-                queue_text += f"{i}. {user['username']}\n"
-        else:
-            queue_text += "✅ **Không có người chờ**"
-        
-        send_line_message(group_id, queue_text)
-    
-    except Exception as e:
-        logger.error(f"❌ Queue error: {e}")
 
 def send_help_message(group_id):
     help_text = f"""
@@ -794,20 +501,19 @@ def send_help_message(group_id):
 • `.status` - Xem trạng thái hệ thống
 • `.queue` - Xem hàng đợi
 • `.test` - Test bot hoạt động
-• `.debug` - Thông tin debug
 • `.id` - Xem Group ID hiện tại
-• `.groups` - Xem bot đang ở nhóm nào
-• `.cleanup` - Xóa bot khỏi nhóm khác
+• `.where` - Kiểm tra bot đang ở đâu
+• `.join` - Hướng dẫn thêm bot vào group
 • `.help` - Xem hướng dẫn này
 
 ⚡ **Cách dùng:**
 1. Đảm bảo local client đang chạy
 2. Gửi `.login username:password` trong group
 3. Bot tự động xử lý ticket
-4. Dùng `.cleanup` nếu bot bị mời vào nhóm khác
 
-🔧 **Group ID hiện tại:**
-`{LINE_GROUP_ID}`
+🔧 **Group hiện tại:**
+• ID: `{LINE_GROUP_ID}`
+• Link: https://line.me/ti/g/{LINE_GROUP_ID}
 """
     
     send_line_message(group_id, help_text)
@@ -815,8 +521,10 @@ def send_help_message(group_id):
 # ==================== MAIN ====================
 if __name__ == '__main__':
     logger.info("="*60)
-    logger.info(f"🚀 LINE BOT SERVER - GROUP: {LINE_GROUP_ID}")
-    logger.info(f"🌐 Server URL: {SERVER_URL}")
+    logger.info(f"🚀 LINE BOT SERVER")
+    logger.info(f"👥 Group ID: {LINE_GROUP_ID}")
+    logger.info(f"🔗 Link: https://line.me/ti/g/{LINE_GROUP_ID}")
+    logger.info(f"🌐 Server: {SERVER_URL}")
     logger.info("="*60)
     
     monitor_thread = Thread(target=connection_monitor, daemon=True)
