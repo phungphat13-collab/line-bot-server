@@ -333,21 +333,26 @@ def send_help_message(group_id):
 
 # ==================== MAIN ====================
 if __name__ == '__main__':
-    # Tự động rời nhóm khác khi khởi động
     logger.info("="*60)
     logger.info(f"🚀 LINE BOT SERVER - GROUP: {LINE_GROUP_ID}")
-    logger.info("🔄 Đang kiểm tra và rời nhóm khác...")
-    auto_leave_other_groups()
-    
-    monitor_thread = Thread(target=connection_monitor, daemon=True)
-    monitor_thread.start()
-    
     logger.info(f"🌐 Server URL: {SERVER_URL}")
     logger.info("="*60)
     
+    # KHỞI ĐỘNG MONITOR TRƯỚC
+    monitor_thread = Thread(target=connection_monitor, daemon=True)
+    monitor_thread.start()
+    
+    # CHẠY AUTO LEAVE TRONG THREAD RIÊNG SAU KHI SERVER KHỞI ĐỘNG
+    def delayed_auto_leave():
+        time.sleep(5)  # Chờ server khởi động xong
+        logger.info("🔄 Đang kiểm tra và rời nhóm khác...")
+        auto_leave_other_groups()
+    
+    leave_thread = Thread(target=delayed_auto_leave, daemon=True)
+    leave_thread.start()
+    
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
 # ==================== MONITOR THREAD ====================
 def connection_monitor():
     """Giám sát kết nối local client"""
