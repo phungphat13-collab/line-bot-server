@@ -139,6 +139,189 @@ def send_line_message(to_id, message):
         logger.error(f"❌ Send message error: {e}")
         return False
 
+# ==================== WEBHOOK & COMMANDS ====================
+@app.route('/webhook', methods=['POST', 'GET'])
+def webhook():
+    """Webhook từ LINE - CHỈ XỬ LÝ GROUP MCerQE7Kk9"""
+    try:
+        if request.method == 'GET':
+            logger.info("✅ GET request - LINE verification")
+            return 'OK', 200
+        
+        data = request.json
+        events = data.get('events', [])
+        
+        if not events:
+            return 'OK', 200
+        
+        for event in events:
+            event_type = event.get('type')
+            source = event.get('source', {})
+            source_type = source.get('type')
+            group_id = source.get('groupId')
+            
+            # CHỈ XỬ LÝ NẾU LÀ GROUP CỦA BẠN
+            if group_id == LINE_GROUP_ID:
+                if event_type == 'message':
+                    message = event.get('message', {})
+                    if message.get('type') == 'text':
+                        message_text = message.get('text', '').strip()
+                        logger.info(f"✅ Command from {LINE_GROUP_ID}: {message_text}")
+                        
+                        handle_group_command(group_id, message_text)
+            
+            # KHÔNG LOG GÌ CẢ ĐỐI VỚI GROUP KHÁC
+            
+        return 'OK', 200
+        
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}")
+        return 'OK', 200
+
+def handle_group_command(group_id, message_text):
+    """Xử lý lệnh từ GROUP"""
+    try:
+        logger.info(f"🎯 Command: '{message_text}'")
+        
+        if message_text == '.help' or message_text == 'help':
+            send_help_message(group_id)
+        
+        elif message_text.startswith('.login '):
+            handle_group_login(group_id, message_text)
+        
+        elif message_text == '.status':
+            handle_group_status(group_id)
+        
+        elif message_text == '.queue':
+            handle_group_queue(group_id)
+        
+        elif message_text == '.test':
+            send_line_message(
+                group_id,
+                f"✅ Bot đang hoạt động!\n"
+                f"👥 Group ID: {group_id}\n"
+                f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}"
+            )
+        
+        elif message_text == '.debug':
+            with clients_lock:
+                client_info = local_clients.get(group_id, {})
+            
+            debug_info = f"""
+🔧 DEBUG INFO:
+• Group ID: {group_id}
+• Server: ✅ Online
+• Client: {'🟢 Connected' if client_info else '🔴 Disconnected'}
+• Automation: {client_info.get('automation_status', 'idle') if client_info else 'N/A'}
+            """
+            send_line_message(group_id, debug_info)
+        
+        elif message_text == '.id':
+            send_line_message(
+                group_id,
+                f"👥 **Group ID của bạn:**\n`{group_id}`\n\n"
+                f"📌 Link group:\nhttps://line.me/ti/g/{group_id}"
+            )
+        
+        elif message_text == '.cleanup':
+            send_line_message(group_id, "🔄 Đang dọn dẹp bot khỏi các nhóm khác...")
+            auto_leave_other_groups()
+            send_line_message(group_id, "✅ Đã dọn dẹp xong! Bot chỉ còn trong nhóm này.")
+        
+        elif message_text == '.groups':
+            check_bot_groups(group_id)
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling command: {e}")
+        send_line_message(group_id, f"❌ Lỗi: {str(e)}")
+
+def check_bot_groups(group_id):
+    """Kiểm tra bot đang ở nhóm nào"""
+    try:
+        url = "https://api.line.me/v2/bot/group/list"
+        headers = {
+            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            groups = response.json().get('groups', [])
+            
+            message = "📋 **BOT ĐANG Ở NHÓM:**\n\n"
+            
+            if not groups:
+                message += "🤖 Bot chưa tham gia nhóm nào"
+            else:
+                for group in groups:
+                    gid = group.get('groupId')
+                    gname = group.get('groupName', 'Không có tên')
+                    
+                    if gid == LINE_GROUP_ID:
+                        message += f"✅ **{gname}** (NHÓM CHÍNH)\n"
+                        message += f"   ID: `{gid}`\n\n"
+                    else:
+                        message += f"⚠️ {gname}\n"
+                        message += f"   ID: `{gid}`\n\n"
+            
+            message += f"📌 Dùng `.cleanup` để xóa bot khỏi nhóm khác"
+            
+        else:
+            message = f"❌ Không thể lấy danh sách: {response.status_code}"
+        
+        send_line_message(group_id, message)
+        
+    except Exception as e:
+        logger.error(f"Error checking groups: {e}")
+        send_line_message(group_id, f"❌ Lỗi: {str(e)}")
+
+def send_help_message(group_id):
+    """Gửi hướng dẫn"""
+    help_text = f"""
+🎯 **HƯỚNG DẪN**
+
+📌 **Lệnh:**
+• `.login username:password` - Chạy automation
+• `.status` - Xem trạng thái hệ thống
+• `.queue` - Xem hàng đợi
+• `.test` - Test bot hoạt động
+• `.debug` - Thông tin debug
+• `.id` - Xem Group ID hiện tại
+• `.groups` - Xem bot đang ở nhóm nào
+• `.cleanup` - Xóa bot khỏi nhóm khác
+• `.help` - Xem hướng dẫn này
+
+⚡ **Cách dùng:**
+1. Đảm bảo local client đang chạy
+2. Gửi `.login username:password` trong group
+3. Bot tự động xử lý ticket
+4. Dùng `.cleanup` nếu bot bị mời vào nhóm khác
+
+🔧 **Group ID hiện tại:**
+`{LINE_GROUP_ID}`
+"""
+    
+    send_line_message(group_id, help_text)
+
+# ... (các hàm handle_group_login, handle_group_status, handle_group_queue giữ nguyên)
+
+# ==================== MAIN ====================
+if __name__ == '__main__':
+    # Tự động rời nhóm khác khi khởi động
+    logger.info("="*60)
+    logger.info(f"🚀 LINE BOT SERVER - GROUP: {LINE_GROUP_ID}")
+    logger.info("🔄 Đang kiểm tra và rời nhóm khác...")
+    auto_leave_other_groups()
+    
+    monitor_thread = Thread(target=connection_monitor, daemon=True)
+    monitor_thread.start()
+    
+    logger.info(f"🌐 Server URL: {SERVER_URL}")
+    logger.info("="*60)
+    
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
 # ==================== MONITOR THREAD ====================
 def connection_monitor():
     """Giám sát kết nối local client"""
