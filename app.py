@@ -11,7 +11,7 @@ import traceback
 app = Flask(__name__)
 
 # ==================== CẤU HÌNH ====================
-LINE_CHANNEL_TOKEN = "gafJcryENWN5ofFbD5sHFR60emoVN0p8EtzvrjxesEi8xnNupQD6pD0cwanobsr3A1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5hCHXqFKTe9UyjGP0xQuLVi8GdfWnM9ODmDpTUqIdxpiQdB04t89/1O/w1cDnyilFU="
+LINE_CHANNEL_TOKEN = "Z45KyBW+4pEZM8OJDh0qM8+8AD2/hQxZdnMSGHRfbuPBMBWF5G3FAXKyS4GqXDzXA1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5gjAofn+Z3Hq/guCI0Q6V5uw6n5l1k/gWURHvcK1+loMQdB04t89/1O/w1cDnyilFU="
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 LINE_GROUP_ID = "MCerQE7Kk9"
 
