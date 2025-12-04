@@ -77,6 +77,11 @@ def send_line_message(to_id, message):
 def auto_leave_other_groups():
     """Bot tự động rời tất cả group khác ngoài group chính"""
     try:
+        logger.info("🔄 Kiểm tra bot đang ở nhóm nào...")
+        
+        # Thêm delay để server ổn định
+        time.sleep(2)
+        
         # Lấy danh sách group bot đang tham gia
         url = "https://api.line.me/v2/bot/group/list"
         headers = {
@@ -88,24 +93,45 @@ def auto_leave_other_groups():
         if response.status_code == 200:
             groups = response.json().get('groups', [])
             
+            if not groups:
+                logger.info("🤖 Bot không ở trong nhóm nào")
+                return
+            
+            logger.info(f"📋 Bot đang ở {len(groups)} nhóm")
+            
+            left_count = 0
             for group in groups:
                 group_id = group.get('groupId')
                 group_name = group.get('groupName', 'Unknown')
                 
-                # Nếu là group khác, tự động rời
                 if group_id != LINE_GROUP_ID:
-                    leave_url = f'https://api.line.me/v2/bot/group/{group_id}/leave'
-                    leave_response = requests.post(leave_url, headers=headers)
+                    logger.info(f"⚠️ Phát hiện nhóm khác: {group_name} ({group_id})")
                     
-                    if leave_response.status_code == 200:
-                        logger.info(f"🚪 Đã rời nhóm: {group_name} ({group_id})")
-                    else:
-                        logger.error(f"❌ Không thể rời nhóm {group_id}: {leave_response.status_code}")
+                    leave_url = f'https://api.line.me/v2/bot/group/{group_id}/leave'
+                    try:
+                        leave_response = requests.post(leave_url, headers=headers, timeout=5)
+                        
+                        if leave_response.status_code == 200:
+                            logger.info(f"🚪 Đã rời nhóm: {group_name}")
+                            left_count += 1
+                        else:
+                            logger.error(f"❌ Không thể rời nhóm {group_id}: {leave_response.status_code}")
+                    except Exception as e:
+                        logger.error(f"❌ Lỗi khi rời nhóm: {e}")
+                else:
+                    logger.info(f"✅ Giữ lại nhóm chính: {group_name}")
+            
+            if left_count > 0:
+                logger.info(f"✅ Đã rời {left_count} nhóm khác")
+            else:
+                logger.info("✅ Bot chỉ ở trong nhóm chính")
+                
         else:
             logger.error(f"❌ Không thể lấy danh sách group: {response.status_code}")
             
     except Exception as e:
         logger.error(f"❌ Lỗi auto leave groups: {e}")
+        # KHÔNG re-raise exception, chỉ log lỗi
 
 def send_line_message(to_id, message):
     """Gửi tin nhắn LINE"""
