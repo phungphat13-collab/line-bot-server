@@ -73,6 +73,72 @@ def send_line_message(to_id, message):
         logger.error(f"❌ Send message error: {e}")
         return False
 
+# ==================== TIỆN ÍCH ====================
+def auto_leave_other_groups():
+    """Bot tự động rời tất cả group khác ngoài group chính"""
+    try:
+        # Lấy danh sách group bot đang tham gia
+        url = "https://api.line.me/v2/bot/group/list"
+        headers = {
+            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            groups = response.json().get('groups', [])
+            
+            for group in groups:
+                group_id = group.get('groupId')
+                group_name = group.get('groupName', 'Unknown')
+                
+                # Nếu là group khác, tự động rời
+                if group_id != LINE_GROUP_ID:
+                    leave_url = f'https://api.line.me/v2/bot/group/{group_id}/leave'
+                    leave_response = requests.post(leave_url, headers=headers)
+                    
+                    if leave_response.status_code == 200:
+                        logger.info(f"🚪 Đã rời nhóm: {group_name} ({group_id})")
+                    else:
+                        logger.error(f"❌ Không thể rời nhóm {group_id}: {leave_response.status_code}")
+        else:
+            logger.error(f"❌ Không thể lấy danh sách group: {response.status_code}")
+            
+    except Exception as e:
+        logger.error(f"❌ Lỗi auto leave groups: {e}")
+
+def send_line_message(to_id, message):
+    """Gửi tin nhắn LINE"""
+    try:
+        # THÊM KIỂM TRA: CHỈ GỬI TỚI GROUP CỦA BẠN
+        if to_id != LINE_GROUP_ID:
+            logger.warning(f"⛔ Blocked sending to other group: {to_id}")
+            return False
+            
+        url = 'https://api.line.me/v2/bot/message/push'
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
+        }
+        
+        data = {
+            'to': to_id,
+            'messages': [{"type": "text", "text": message}]
+        }
+        
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        
+        if response.status_code == 200:
+            logger.info(f"📤 Sent to {to_id}: {message[:50]}...")
+            return True
+        else:
+            logger.error(f"❌ Line API error: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Send message error: {e}")
+        return False
+
 # ==================== MONITOR THREAD ====================
 def connection_monitor():
     """Giám sát kết nối local client"""
