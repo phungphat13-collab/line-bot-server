@@ -472,6 +472,198 @@ def update_automation_status():
 # ========== LINE WEBHOOK ==========
 @app.route('/webhook', methods=['POST'])
 def webhook():
+
+"""
+CẬP NHẬT QUAN TRỌNG CHO server.py
+Thêm đoạn code sau vào hàm webhook() để debug chi tiết
+"""
+
+# ==================== WEBHOOK FIX ====================
+@app.route('/webhook', methods=['POST', 'GET'])
+def webhook():
+    """Webhook từ LINE - FIXED VERSION"""
+    try:
+        # Log chi tiết request
+        logger.info("="*60)
+        logger.info("📨 WEBHOOK RECEIVED")
+        logger.info(f"📝 Method: {request.method}")
+        logger.info(f"📦 Headers: {dict(request.headers)}")
+        
+        # Nếu là GET request (LINE verify)
+        if request.method == 'GET':
+            logger.info("✅ GET request - LINE verification")
+            return 'OK', 200
+        
+        # Lấy signature từ LINE
+        signature = request.headers.get('X-Line-Signature', '')
+        logger.info(f"🔐 Signature: {signature[:20]}...")
+        
+        # Lấy raw body
+        body = request.get_data(as_text=True)
+        logger.info(f"📄 Body length: {len(body)} chars")
+        logger.info(f"📄 Body preview: {body[:200]}...")
+        
+        # Parse JSON
+        try:
+            data = request.json
+            events = data.get('events', [])
+            logger.info(f"📊 Events count: {len(events)}")
+            
+            # Log từng event
+            for i, event in enumerate(events):
+                logger.info(f"  Event {i+1}:")
+                logger.info(f"    Type: {event.get('type')}")
+                
+                source = event.get('source', {})
+                user_id = source.get('userId')
+                group_id = source.get('groupId')
+                
+                if user_id:
+                    logger.info(f"    User ID: {user_id}")
+                    # Lưu user vào recent
+                    add_recent_user(user_id, "line_webhook")
+                
+                if group_id:
+                    logger.info(f"    Group ID: {group_id}")
+                
+                if event.get('type') == 'message':
+                    message = event.get('message', {})
+                    logger.info(f"    Message type: {message.get('type')}")
+                    logger.info(f"    Message text: {message.get('text', '')}")
+                    
+                    # Xử lý lệnh
+                    if message.get('type') == 'text':
+                        message_text = message.get('text', '').strip()
+                        reply_token = event.get('replyToken')
+                        
+                        logger.info(f"    📝 Processing: '{message_text}'")
+                        
+                        # Xử lý lệnh
+                        handle_line_command(user_id, group_id, message_text, reply_token)
+                        
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ JSON decode error: {e}")
+            logger.error(f"   Raw body: {body}")
+            return 'Bad Request', 400
+        
+        logger.info("✅ Webhook processed successfully")
+        return 'OK', 200
+        
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 'OK', 200  # Vẫn trả OK để LINE không retry
+
+def add_recent_user(user_id, source="webhook"):
+    """Thêm user vào danh sách recent - đảm bảo lưu"""
+    try:
+        with users_lock:
+            global recent_users
+            
+            # Kiểm tra xem user đã có chưa
+            existing = False
+            for user in recent_users:
+                if user.get("user_id") == user_id:
+                    user["timestamp"] = time.time()
+                    user["source"] = source
+                    existing = True
+                    break
+            
+            if not existing:
+                recent_users.append({
+                    "user_id": user_id,
+                    "timestamp": time.time(),
+                    "source": source
+                })
+                
+                # Giới hạn 50 user gần nhất
+                if len(recent_users) > 50:
+                    recent_users = recent_users[-50:]
+            
+            logger.info(f"➕ Added/Updated user: {user_id} from {source}")
+            
+    except Exception as e:
+        logger.error(f"❌ Error adding recent user: {e}")
+
+def handle_line_command(user_id, group_id, message_text, reply_token):
+    """Xử lý lệnh từ LINE - LOG CHI TIẾT"""
+    try:
+        logger.info(f"🎯 Handling command: '{message_text}' from {user_id}")
+        
+        # Lệnh .help
+        if message_text == '.help' or message_text == 'help':
+            logger.info("   Processing: .help command")
+            send_help_message(user_id, group_id)
+        
+        # Lệnh .login
+        elif message_text.startswith('.login '):
+            logger.info(f"   Processing: .login command")
+            handle_login_command(user_id, group_id, message_text)
+        
+        # Lệnh .status
+        elif message_text == '.status':
+            logger.info("   Processing: .status command")
+            handle_status_command(user_id, group_id)
+        
+        # Lệnh .queue
+        elif message_text == '.queue':
+            logger.info("   Processing: .queue command")
+            handle_queue_command(user_id, group_id)
+        
+        # Lệnh .myid
+        elif message_text == '.myid':
+            logger.info("   Processing: .myid command")
+            send_line_message(
+                user_id if not group_id else group_id,
+                f"🆔 User ID của bạn: {user_id}",
+                "group" if group_id else "user"
+            )
+        
+        # Lệnh .test
+        elif message_text == '.test':
+            logger.info("   Processing: .test command")
+            send_line_message(
+                user_id if not group_id else group_id,
+                f"✅ Bot đang hoạt động!\n"
+                f"📱 User ID: {user_id[:15]}...\n"
+                f"🕒 Server time: {datetime.now().strftime('%H:%M:%S')}\n"
+                f"🌐 Webhook: OK",
+                "group" if group_id else "user"
+            )
+            
+            # Log thêm
+            logger.info(f"   Sent test response to {user_id}")
+        
+        # Lệnh .debug
+        elif message_text == '.debug':
+            logger.info("   Processing: .debug command")
+            debug_info = f"""
+🔧 DEBUG INFO:
+• User ID: {user_id}
+• Group ID: {group_id or 'N/A'}
+• Server: Đang hoạt động
+• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+• Recent users: {len(recent_users)}
+• Local clients: {len(local_clients)}
+            """
+            send_line_message(
+                user_id if not group_id else group_id,
+                debug_info,
+                "group" if group_id else "user"
+            )
+        
+        # Không phải lệnh, chuyển tiếp cho local client
+        else:
+            logger.info(f"   Forwarding to local client: '{message_text}'")
+            forward_to_local_client(user_id, message_text)
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling command: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+    
     """Webhook từ LINE"""
     try:
         # Lấy signature để verify (có thể thêm sau)
