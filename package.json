@@ -1,8 +1,5 @@
 {
-  "name": "line-bot-python",
+  "name": "line-bot-server",
   "version": "1.0.0",
-  "description": "Line Bot Python Server",
-  "scripts": {
-    "start": "python app.py"
-  }
-}
+  "description": "LINE Bot Server for Ticket Automation",
+  "scripts":
