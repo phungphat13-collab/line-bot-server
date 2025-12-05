@@ -6,15 +6,17 @@ import logging
 import json
 import os
 from datetime import datetime
+import hmac
+import hashlib
 import traceback
 
 app = Flask(__name__)
 
-# ==================== CẤU HÌNH MỚI ====================
-LINE_CHANNEL_TOKEN = "Z45KyBW+4pEZM8OJDh0qM8+8AD2/hQxZdnMSGHRfbuPBMBWF5G3FAXKyS4GqXDzXA1zr/wRw6kixaU0z42nVUaVduNufOSr5WDhteHfjf5gjAofn+Z3Hq/guCI0Q6V5uw6n5l1k/gWURHvcK1+loMQdB04t89/1O/w1cDnyilFU="
+# ==================== CẤU HÌNH VỚI TOKEN MỚI ====================
+LINE_CHANNEL_SECRET = "b03437eaab695eb64192de4a7b268d6d"  # CHANNEL SECRET MỚI
+LINE_CHANNEL_TOKEN = "7HxJf6ykrTfMuz918kpokPMNUZOqpRv8FcGoJM/dkP8uIaqrwU5xFC+M8RoLUxYkkfZdrokoC9pMQ3kJv/SKxXTWTH1KhUe9fdXsNqVZXTA1w21+Wp1ywTQxZQViR2DVqR8w6CPvQpFJCbdvynuvSQdB04t89/1O/w1cDnyilFU="  # TOKEN MỚI
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
-# ⚠️ CHÚ Ý: ĐÃ THAY ĐỔI GROUP ID NÀY
-LINE_GROUP_ID = "Dc67tyJVQr"  # GROUP ID TỪ LINK MỚI: https://line.me/ti/g/Dc67tyJVQr
+LINE_GROUP_ID = "Dc67tyJVQr"  # GROUP ID MỚI
 
 # ==================== BIẾN TOÀN CỤC ====================
 local_clients = {}
@@ -45,14 +47,35 @@ def setup_logging():
 
 logger = setup_logging()
 
+# ==================== XÁC MINH WEBHOOK ====================
+def verify_signature(body, signature):
+    """Xác minh chữ ký webhook từ LINE"""
+    try:
+        hash = hmac.new(
+            LINE_CHANNEL_SECRET.encode('utf-8'),
+            body.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+        expected_signature = base64.b64encode(hash).decode('utf-8')
+        
+        if signature != expected_signature:
+            logger.warning(f"⚠️ Signature mismatch!")
+            logger.warning(f"  Expected: {expected_signature[:50]}...")
+            logger.warning(f"  Received: {signature[:50]}...")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"❌ Verify signature error: {e}")
+        return False
+
 # ==================== TIỆN ÍCH ====================
 def send_line_message(to_id, message):
-    """Gửi tin nhắn LINE"""
+    """Gửi tin nhắn LINE với token mới"""
     try:
         url = 'https://api.line.me/v2/bot/message/push'
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
+            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'  # DÙNG TOKEN MỚI
         }
         
         data = {
@@ -66,7 +89,8 @@ def send_line_message(to_id, message):
             logger.info(f"📤 Sent to {to_id}: {message[:50]}...")
             return True
         else:
-            logger.error(f"❌ Line API error: {response.status_code} - {response.text}")
+            logger.error(f"❌ Line API error: {response.status_code}")
+            logger.error(f"Response: {response.text}")
             return False
             
     except Exception as e:
@@ -110,51 +134,70 @@ def connection_monitor():
 # ========== HEALTH & INFO ==========
 @app.route('/')
 def index():
-    with clients_lock:
-        client_count = len(local_clients)
-    
-    with queue_lock:
-        waiting_count = len(group_queues[LINE_GROUP_ID]["waiting_users"])
-    
+    """Trang chủ"""
     return jsonify({
         "status": "online",
         "service": "LINE Bot Server",
-        "version": "2.0",
+        "version": "3.0",
+        "token_status": "NEW TOKEN CONFIGURED",
         "group_id": LINE_GROUP_ID,
         "group_link": f"https://line.me/ti/g/{LINE_GROUP_ID}",
-        "clients_connected": client_count,
-        "waiting_users": waiting_count,
         "webhook": f"{SERVER_URL}/webhook",
         "server_time": datetime.now().isoformat()
     })
 
 @app.route('/health', methods=['GET'])
 def health_check():
+    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "timestamp": time.time(),
-        "group_id": LINE_GROUP_ID
-    })
-
-# ========== DEBUG ENDPOINTS ==========
-@app.route('/test', methods=['GET'])
-def test_webhook():
-    """Test webhook endpoint"""
-    return jsonify({
-        "status": "success",
-        "server": SERVER_URL,
-        "webhook": f"{SERVER_URL}/webhook",
         "group_id": LINE_GROUP_ID,
-        "timestamp": time.time()
+        "token_valid": True
     })
 
-@app.route('/send_test', methods=['GET'])
-def send_test_message():
-    """Gửi test message đến group mới"""
+# ========== TEST ENDPOINTS ==========
+@app.route('/test_token', methods=['GET'])
+def test_token():
+    """Test token mới"""
     try:
-        message = f"🔄 **TEST TỪ SERVER**\n\n" \
-                 f"✅ Group mới: {LINE_GROUP_ID}\n" \
-                 f"🔗 Link: https://line.me/ti/g/{LINE_GROUP_ID}\n" \
+        # Test token bằng cách lấy bot profile
+        url = "https://api.line.me/v2/bot/info"
+        headers = {
+            'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            bot_info = response.json()
+            return jsonify({
+                "status": "success",
+                "message": "Token is valid",
+                "bot_info": bot_info,
+                "channel_secret": LINE_CHANNEL_SECRET[:10] + "...",
+                "channel_token": LINE_CHANNEL_TOKEN[:10] + "..."
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Token invalid: {response.status_code}",
+                "response": response.text
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/send_demo', methods=['GET'])
+def send_demo_message():
+    """Gửi demo message với token mới"""
+    try:
+        message = f"🚀 **LINE BOT ĐÃ ĐƯỢC CẬP NHẬT**\n\n" \
+                 f"✅ Token mới đã được áp dụng\n" \
+                 f"🔗 Group: https://line.me/ti/g/{LINE_GROUP_ID}\n" \
                  f"🕒 {datetime.now().strftime('%H:%M:%S')}\n" \
                  f"🌐 Server: {SERVER_URL}"
         
@@ -162,7 +205,7 @@ def send_test_message():
         
         return jsonify({
             "status": "success" if success else "error",
-            "message": "Test sent to new group" if success else "Failed",
+            "message": "Demo message sent" if success else "Failed to send",
             "group_id": LINE_GROUP_ID,
             "timestamp": time.time()
         })
@@ -170,63 +213,125 @@ def send_test_message():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/check_group', methods=['GET'])
-def check_bot_location():
-    """Kiểm tra bot đang ở group nào"""
+# ========== LINE WEBHOOK ==========
+@app.route('/webhook', methods=['POST', 'GET'])
+def webhook_handler():
+    """Endpoint nhận webhook từ LINE"""
     try:
-        # Lấy danh sách group bot đang tham gia
-        url = "https://api.line.me/v2/bot/group/list"
-        headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
+        # Xử lý GET request (LINE verification)
+        if request.method == 'GET':
+            logger.info("✅ LINE webhook verification request")
+            return 'OK', 200
         
-        response = requests.get(url, headers=headers, timeout=10)
+        # Xác minh chữ ký
+        signature = request.headers.get('X-Line-Signature', '')
+        body = request.get_data(as_text=True)
         
-        if response.status_code == 200:
-            groups = response.json().get('groups', [])
+        if not verify_signature(body, signature):
+            logger.error("❌ Invalid signature!")
+            return 'Invalid signature', 400
+        
+        # Parse JSON data
+        data = request.json
+        events = data.get('events', [])
+        
+        logger.info(f"📨 Received {len(events)} events")
+        
+        for event in events:
+            event_type = event.get('type')
             
-            result = {
-                "target_group_id": LINE_GROUP_ID,
-                "target_group_link": f"https://line.me/ti/g/{LINE_GROUP_ID}",
-                "total_groups": len(groups),
-                "groups": [],
-                "in_target_group": False
-            }
-            
-            for group in groups:
-                group_id = group.get('groupId')
-                is_target = (group_id == LINE_GROUP_ID)
+            if event_type == 'message':
+                message = event.get('message', {})
                 
-                if is_target:
-                    result["in_target_group"] = True
-                
-                result["groups"].append({
-                    "group_id": group_id,
-                    "group_name": group.get('groupName', 'Unknown'),
-                    "is_target_group": is_target
-                })
-            
-            return jsonify(result)
-        else:
-            return jsonify({
-                "error": f"API Error: {response.status_code}",
-                "message": response.text
-            }), 400
-            
+                if message.get('type') == 'text':
+                    text = message.get('text', '').strip()
+                    source = event.get('source', {})
+                    group_id = source.get('groupId')
+                    user_id = source.get('userId')
+                    
+                    logger.info(f"💬 Message from {user_id} in {group_id}: {text}")
+                    
+                    # Chỉ xử lý nếu là group đích
+                    if group_id == LINE_GROUP_ID:
+                        process_message(text, group_id, user_id)
+                    else:
+                        logger.warning(f"⚠️ Ignored: Message from other group {group_id}")
+        
+        return 'OK', 200
+        
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"❌ Webhook error: {str(e)}")
+        traceback.print_exc()
+        return 'OK', 200
 
-# ========== LOCAL CLIENT REGISTRATION ==========
+def process_message(text, group_id, user_id):
+    """Xử lý tin nhắn từ group"""
+    try:
+        # Lệnh đơn giản
+        if text == '.hello':
+            reply = "👋 Xin chào! Tôi là LINE Bot với token mới!"
+        
+        elif text == '.help':
+            reply = "📋 **DANH SÁCH LỆNH**\n\n" \
+                   "• `.hello` - Chào hỏi\n" \
+                   "• `.test` - Kiểm tra bot\n" \
+                   "• `.id` - Xem Group ID\n" \
+                   "• `.token` - Kiểm tra token\n" \
+                   "• `.server` - Thông tin server\n" \
+                   "• `.help` - Hướng dẫn sử dụng"
+        
+        elif text == '.test':
+            reply = f"✅ **BOT HOẠT ĐỘNG BÌNH THƯỜNG**\n\n" \
+                   f"• Token: MỚI ✅\n" \
+                   f"• Group: {LINE_GROUP_ID}\n" \
+                   f"• User: {user_id}\n" \
+                   f"• Time: {datetime.now().strftime('%H:%M:%S')}"
+        
+        elif text == '.id':
+            reply = f"👥 **THÔNG TIN**\n\n" \
+                   f"• Group ID: `{group_id}`\n" \
+                   f"• User ID: `{user_id}`\n" \
+                   f"• Link: https://line.me/ti/g/{group_id}"
+        
+        elif text == '.token':
+            reply = f"🔐 **TOKEN INFO**\n\n" \
+                   f"• Status: ĐÃ CẬP NHẬT ✅\n" \
+                   f"• Token: {LINE_CHANNEL_TOKEN[:15]}...\n" \
+                   f"• Secret: {LINE_CHANNEL_SECRET[:15]}..."
+        
+        elif text == '.server':
+            reply = f"🌐 **SERVER**\n\n" \
+                   f"• URL: {SERVER_URL}\n" \
+                   f"• Webhook: {SERVER_URL}/webhook\n" \
+                   f"• Health: {SERVER_URL}/health\n" \
+                   f"• Test: {SERVER_URL}/test_token"
+        
+        else:
+            # Phản hồi cho tin nhắn thường
+            reply = f"📩 Bạn đã gửi: {text}\n\n" \
+                   f"Đây là bot với token mới!\n" \
+                   f"Gõ `.help` để xem các lệnh."
+        
+        # Gửi phản hồi
+        send_line_message(group_id, reply)
+        logger.info(f"📤 Replied to {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Process message error: {e}")
+        send_line_message(group_id, f"❌ Lỗi xử lý: {str(e)}")
+
+# ========== LOCAL CLIENT API ==========
 @app.route('/register', methods=['POST'])
-def register_group():
+def register_client():
+    """Đăng ký local client"""
     try:
         data = request.json
         group_id = data.get('group_id', LINE_GROUP_ID)
         
-        # Chỉ chấp nhận group ID mới
         if group_id != LINE_GROUP_ID:
             return jsonify({
                 "error": "Invalid group_id",
-                "expected": LINE_GROUP_ID,
-                "received": group_id
+                "expected": LINE_GROUP_ID
             }), 400
         
         with clients_lock:
@@ -234,17 +339,16 @@ def register_group():
                 'last_ping': time.time(),
                 'status': 'active',
                 'ip': request.remote_addr,
-                'tasks': [],
                 'registered_at': datetime.now().isoformat()
             }
         
-        logger.info(f"✅ Client registered for group: {group_id}")
+        logger.info(f"✅ Client registered: {group_id}")
         
         return jsonify({
             "status": "success",
-            "message": "Client registered successfully",
+            "message": "Registered successfully",
             "group_id": group_id,
-            "webhook": f"{SERVER_URL}/webhook"
+            "token": "NEW_TOKEN_ACTIVE"
         })
         
     except Exception as e:
@@ -252,8 +356,8 @@ def register_group():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/ping', methods=['POST'])
-def ping_group():
-    """Ping để giữ kết nối"""
+def ping_client():
+    """Ping từ local client"""
     try:
         data = request.json
         group_id = data.get('group_id', LINE_GROUP_ID)
@@ -266,120 +370,25 @@ def ping_group():
                 local_clients[group_id]['last_ping'] = time.time()
                 return jsonify({
                     "status": "pong",
-                    "group_id": group_id,
                     "timestamp": time.time()
                 })
             else:
-                return jsonify({"error": "Group not registered"}), 404
+                return jsonify({"error": "Not registered"}), 404
                 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ========== LINE WEBHOOK - SIMPLIFIED ==========
-@app.route('/webhook', methods=['POST', 'GET'])
-def webhook_handler():
-    """Endpoint nhận webhook từ LINE"""
-    try:
-        if request.method == 'GET':
-            logger.info("✅ Webhook verification request")
-            return 'OK', 200
-        
-        # Nhận dữ liệu từ LINE
-        data = request.json
-        events = data.get('events', [])
-        
-        logger.info(f"📨 Received {len(events)} events from LINE")
-        
-        for event in events:
-            event_type = event.get('type')
-            
-            # Chỉ xử lý message event
-            if event_type == 'message':
-                message = event.get('message', {})
-                
-                if message.get('type') == 'text':
-                    text = message.get('text', '').strip()
-                    source = event.get('source', {})
-                    group_id = source.get('groupId')
-                    
-                    logger.info(f"💬 Message in group {group_id}: {text}")
-                    
-                    # Chỉ xử lý nếu là group đích
-                    if group_id == LINE_GROUP_ID:
-                        handle_message(text, group_id)
-                    else:
-                        logger.warning(f"⚠️ Ignored message from other group: {group_id}")
-        
-        return 'OK', 200
-        
-    except Exception as e:
-        logger.error(f"❌ Webhook error: {str(e)}")
-        return 'OK', 200  # Vẫn trả về 200 để LINE không gửi lại
-
-def handle_message(text, group_id):
-    """Xử lý tin nhắn từ group"""
-    try:
-        if text == '.hello':
-            reply = "👋 Chào bạn! Tôi là LINE Bot.\nGõ .help để xem hướng dẫn"
-        
-        elif text == '.help':
-            reply = "📋 **HƯỚNG DẪN SỬ DỤNG**\n\n" \
-                   "• `.hello` - Chào hỏi\n" \
-                   "• `.test` - Kiểm tra bot\n" \
-                   "• `.id` - Xem Group ID\n" \
-                   "• `.status` - Trạng thái hệ thống\n" \
-                   "• `.server` - Thông tin server\n" \
-                   "• `.help` - Hiển thị hướng dẫn này"
-        
-        elif text == '.test':
-            reply = f"✅ **BOT ĐANG HOẠT ĐỘNG**\n\n" \
-                   f"• Group: {LINE_GROUP_ID}\n" \
-                   f"• Server: {SERVER_URL}\n" \
-                   f"• Time: {datetime.now().strftime('%H:%M:%S')}"
-        
-        elif text == '.id':
-            reply = f"👥 **GROUP INFO**\n\n" \
-                   f"• ID: `{group_id}`\n" \
-                   f"• Link: https://line.me/ti/g/{group_id}\n" \
-                   f"• Webhook: {SERVER_URL}/webhook"
-        
-        elif text == '.status':
-            with clients_lock:
-                client_count = len(local_clients)
-            
-            reply = f"📊 **SYSTEM STATUS**\n\n" \
-                   f"• Server: ✅ Online\n" \
-                   f"• Group ID: {LINE_GROUP_ID}\n" \
-                   f"• Clients: {client_count}\n" \
-                   f"• Time: {datetime.now().strftime('%H:%M:%S')}"
-        
-        elif text == '.server':
-            reply = f"🌐 **SERVER INFO**\n\n" \
-                   f"• URL: {SERVER_URL}\n" \
-                   f"• Webhook: {SERVER_URL}/webhook\n" \
-                   f"• Health: {SERVER_URL}/health\n" \
-                   f"• Group: {SERVER_URL}/check_group"
-        
-        else:
-            # Phản hồi mặc định cho tin nhắn không phải lệnh
-            reply = f"📩 Bạn đã gửi: {text}\n\n" \
-                   f"Gõ `.help` để xem các lệnh có sẵn"
-        
-        # Gửi phản hồi
-        send_line_message(group_id, reply)
-        logger.info(f"📤 Replied to group {group_id}")
-        
-    except Exception as e:
-        logger.error(f"❌ Error handling message: {e}")
-
 # ==================== CHẠY SERVER ====================
 if __name__ == '__main__':
+    import base64
+    
     logger.info("="*60)
-    logger.info("🚀 LINE BOT SERVER STARTING")
-    logger.info(f"👥 Target Group: {LINE_GROUP_ID}")
+    logger.info("🚀 LINE BOT SERVER - TOKEN MỚI")
+    logger.info(f"🔐 Channel Secret: {LINE_CHANNEL_SECRET[:10]}...")
+    logger.info(f"🔑 Channel Token: {LINE_CHANNEL_TOKEN[:10]}...")
+    logger.info(f"👥 Group ID: {LINE_GROUP_ID}")
     logger.info(f"🔗 Group Link: https://line.me/ti/g/{LINE_GROUP_ID}")
     logger.info(f"🌐 Server URL: {SERVER_URL}")
-    logger.info(f"🔄 Webhook: {SERVER_URL}/webhook")
     logger.info("="*60)
     
     # Khởi động monitor thread
