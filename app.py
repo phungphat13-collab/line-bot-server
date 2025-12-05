@@ -591,7 +591,8 @@ def index():
     
     # Thống kê
     online_locals = sum(1 for local_id, info in local_connections.items() 
-                       if (datetime.now() - (info.get("last_ping") or datetime.now())).total_seconds() < 60)
+                       if info.get("last_ping") and 
+                       (datetime.now() - (datetime.fromisoformat(info.get("last_ping").replace('Z', '+00:00')) if isinstance(info.get("last_ping"), str) else info.get("last_ping"))).total_seconds() < 60)
     
     return jsonify({
         "status": "online",
@@ -644,7 +645,7 @@ def line_webhook():
         logger.info(f"📨 Nhận {len(events)} events từ LINE")
         
         for event in events:
-            await process_line_event(event)
+            process_line_event(event)
         
         return 'OK', 200
         
@@ -939,8 +940,15 @@ def handle_status_command(user_id, chat_id, chat_type, group_id):
                 status_text = "📊 TRẠNG THÁI GROUP:\n• Đang sử dụng: 🟢 KHÔNG CÓ\n• Trạng thái: SẴN SÀNG"
         
         # Thêm thông tin hệ thống
-        online_locals = sum(1 for local_id, info in local_connections.items() 
-                           if (datetime.now() - (info.get("last_ping") or datetime.now())).total_seconds() < 60)
+        online_locals = 0
+        for local_id, info in local_connections.items():
+            last_ping = info.get("last_ping")
+            if last_ping:
+                if isinstance(last_ping, str):
+                    last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                time_diff = (datetime.now() - last_ping).total_seconds()
+                if time_diff < 60:
+                    online_locals += 1
         
         status_text += f"\n\n⚙️ HỆ THỐNG:\n• Máy local online: {online_locals}/{len(local_connections)}\n• Job đang chờ: {len(job_queue)}\n• Server: ✅ ONLINE"
         
@@ -1083,8 +1091,15 @@ def handle_queue_command(chat_id, chat_type, group_id):
                 queue_text += f"{i}. {user['username']}\n"
         
         # Thêm thông tin hệ thống
-        online_locals = sum(1 for local_id, info in local_connections.items() 
-                           if (datetime.now() - (info.get("last_ping") or datetime.now())).total_seconds() < 60)
+        online_locals = 0
+        for local_id, info in local_connections.items():
+            last_ping = info.get("last_ping")
+            if last_ping:
+                if isinstance(last_ping, str):
+                    last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                time_diff = (datetime.now() - last_ping).total_seconds()
+                if time_diff < 60:
+                    online_locals += 1
         
         queue_text += f"\n⚙️ THỐNG KÊ:\n• Máy local online: {online_locals}\n• Tổng job chờ: {len(job_queue)}"
         
@@ -1110,8 +1125,16 @@ def sync_worker():
             
             # Log system status mỗi 5 phút
             if int(time.time()) % 300 < 5:  # Mỗi 5 phút
-                online_locals = sum(1 for local_id, info in local_connections.items() 
-                                   if (datetime.now() - (info.get("last_ping") or datetime.now())).total_seconds() < 60)
+                online_locals = 0
+                for local_id, info in local_connections.items():
+                    last_ping = info.get("last_ping")
+                    if last_ping:
+                        if isinstance(last_ping, str):
+                            last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                        time_diff = (datetime.now() - last_ping).total_seconds()
+                        if time_diff < 60:
+                            online_locals += 1
+                
                 logger.info(f"📊 System status - Locals: {online_locals}/{len(local_connections)} online, Jobs: {len(job_queue)} pending, Active: {len(active_automations)}")
             
             time.sleep(10)  # Chạy mỗi 10 giây
