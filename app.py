@@ -17,7 +17,7 @@ LINE_CHANNEL_TOKEN = "7HxJf6ykrTfMuz918kpokPMNUZOqpRv8FcGoJM/dkP8uIaqrwU5xFC+M8R
 
 # ⚠️ QUAN TRỌNG: KIỂM TRA LẠI CHANNEL SECRET
 # Lấy từ LINE Developer Console -> Channel -> Basic settings -> Channel secret
-LINE_CHANNEL_SECRET = "b03437eaab695eb64192de4a7b268d6d"  # Kiểm tra lại giá trị này
+LINE_CHANNEL_SECRET = "af29ee5866ddf060e20024b1c08bc2cf"  # Kiểm tra lại giá trị này
 
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 PING_INTERVAL = 30  # Giây giữa các lần ping
