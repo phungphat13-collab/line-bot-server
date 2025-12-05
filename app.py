@@ -4,12 +4,12 @@ import time
 import logging
 import os
 from datetime import datetime
+import json
 
 app = Flask(__name__)
 
 # ==================== CẤU HÌNH ====================
 LINE_CHANNEL_TOKEN = "7HxJf6ykrTfMuz918kpokPMNUZOqpRv8FcGoJM/dkP8uIaqrwU5xFC+M8RoLUxYkkfZdrokoC9pMQ3kJv/SKxXTWTH1KhUe9fdXsNqVZXTA1w21+Wp1ywTQxZQViR2DVqR8w6CPvQpFJCbdvynuvSQdB04t89/1O/w1cDnyilFU="
-LINE_GROUP_ID = "Dc67tyJVQr"
 
 # ==================== LOGGING ====================
 logging.basicConfig(level=logging.INFO)
@@ -37,15 +37,30 @@ def test_token():
         logger.error(f"❌ Test token error: {e}")
         return False, None
 
-def send_line_message(to_id, message):
-    """Gửi tin nhắn LINE"""
+def get_bot_groups():
+    """Lấy danh sách tất cả group mà bot đang tham gia"""
     try:
-        # Kiểm tra token trước
-        is_valid, bot_info = test_token()
-        if not is_valid:
-            logger.error("❌ Cannot send: Token invalid")
-            return False
+        url = "https://api.line.me/v2/bot/group/list"
+        headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
         
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            groups = data.get('groups', [])
+            logger.info(f"📊 Bot is in {len(groups)} groups")
+            return groups
+        else:
+            logger.error(f"❌ Failed to get groups: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"❌ Get groups error: {e}")
+        return []
+
+def send_to_group(group_id, message):
+    """Gửi tin nhắn đến group"""
+    try:
         url = 'https://api.line.me/v2/bot/message/push'
         headers = {
             'Content-Type': 'application/json',
@@ -53,150 +68,105 @@ def send_line_message(to_id, message):
         }
         
         data = {
-            'to': to_id,
+            'to': group_id,
             'messages': [{"type": "text", "text": message}]
         }
         
-        logger.info(f"📤 Sending to {to_id}: {message[:30]}...")
-        logger.info(f"📤 Token used: {LINE_CHANNEL_TOKEN[:20]}...")
-        
         response = requests.post(url, headers=headers, json=data, timeout=10)
         
-        logger.info(f"📤 Response Status: {response.status_code}")
-        logger.info(f"📤 Response Body: {response.text}")
-        
         if response.status_code == 200:
-            logger.info(f"✅ Sent successfully to {to_id}")
+            logger.info(f"✅ Sent to group {group_id[:10]}...")
             return True
         else:
-            logger.error(f"❌ Failed to send. Status: {response.status_code}")
-            logger.error(f"Error details: {response.text}")
+            logger.error(f"❌ Send failed: {response.status_code} - {response.text}")
             return False
             
     except Exception as e:
-        logger.error(f"❌ Send message error: {str(e)}")
+        logger.error(f"❌ Send error: {e}")
         return False
 
 # ========== ENDPOINTS ==========
 @app.route('/')
 def index():
     """Trang chủ"""
+    groups = get_bot_groups()
+    
     return jsonify({
         "status": "online",
-        "service": "LINE Bot Debug Server",
-        "group_id": LINE_GROUP_ID,
+        "bot_groups_count": len(groups),
+        "groups": groups,
         "timestamp": time.time()
     })
 
-@app.route('/test_token', methods=['GET'])
-def test_token_endpoint():
-    """Test token endpoint"""
-    is_valid, bot_info = test_token()
+@app.route('/debug_groups', methods=['GET'])
+def debug_groups():
+    """Debug: Hiển thị tất cả group bot đang tham gia"""
+    groups = get_bot_groups()
     
-    if is_valid:
-        return jsonify({
-            "status": "success",
-            "message": "Token is valid",
-            "bot_name": bot_info.get('displayName'),
-            "bot_id": bot_info.get('userId'),
-            "basic_id": bot_info.get('basicId')
+    group_list = []
+    for group in groups:
+        group_list.append({
+            "group_id": group.get('groupId'),
+            "group_name": group.get('groupName', 'Unknown'),
+            "group_type": "Regular Group" if group.get('groupId', '').startswith('C') else "Other"
         })
-    else:
-        return jsonify({
-            "status": "error",
-            "message": "Token is invalid",
-            "timestamp": time.time()
-        }), 400
+    
+    return jsonify({
+        "status": "success",
+        "total_groups": len(groups),
+        "groups": group_list,
+        "timestamp": time.time()
+    })
 
-@app.route('/test_send', methods=['GET'])
-def test_send():
-    """Test gửi tin nhắn đơn giản"""
-    try:
-        message = "🔄 Test message from server\n" \
-                 f"Group: {LINE_GROUP_ID}\n" \
-                 f"Time: {datetime.now().strftime('%H:%M:%S')}"
-        
-        success = send_line_message(LINE_GROUP_ID, message)
-        
-        if success:
-            return jsonify({
-                "status": "success",
-                "message": "Message sent successfully",
-                "group_id": LINE_GROUP_ID,
-                "timestamp": time.time()
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Failed to send message",
-                "group_id": LINE_GROUP_ID,
-                "timestamp": time.time()
-            }), 400
-            
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": time.time()
-        }), 500
+@app.route('/find_real_group_id', methods=['GET'])
+def find_real_group_id():
+    """
+    Tìm Group ID thực sự từ link ID
+    Bằng cách gửi test message và xem webhook log
+    """
+    return jsonify({
+        "instructions": "Để tìm Real Group ID, làm theo các bước:",
+        "steps": [
+            "1. Mở group LINE mà bot đã tham gia",
+            "2. Gửi bất kỳ tin nhắn nào trong group",
+            "3. Webhook sẽ nhận được event với REAL groupId",
+            "4. Xem logs trên Render để thấy groupId thực",
+            "5. Dùng groupId đó trong code"
+        ],
+        "webhook_url": "https://line-bot-server-m54s.onrender.com/webhook",
+        "note": "Group ID thực thường bắt đầu bằng 'C' (ví dụ: C1234567890abcdef)"
+    })
 
-@app.route('/check_group', methods=['GET'])
-def check_group():
-    """Kiểm tra bot có trong group không"""
-    try:
-        # 1. Kiểm tra token
-        is_valid, bot_info = test_token()
-        if not is_valid:
-            return jsonify({
-                "status": "error",
-                "message": "Token invalid",
-                "timestamp": time.time()
-            }), 400
+@app.route('/send_to_all_groups', methods=['GET'])
+def send_to_all_groups():
+    """Gửi test message đến tất cả group"""
+    groups = get_bot_groups()
+    results = []
+    
+    for group in groups:
+        group_id = group.get('groupId')
+        group_name = group.get('groupName', 'Unknown')
         
-        # 2. Kiểm tra bot có trong group không
-        url = f"https://api.line.me/v2/bot/group/{LINE_GROUP_ID}/summary"
-        headers = {'Authorization': f'Bearer {LINE_CHANNEL_TOKEN}'}
+        message = f"📢 Test từ server\nGroup: {group_name}\nID: {group_id[:10]}...\nTime: {datetime.now().strftime('%H:%M:%S')}"
         
-        response = requests.get(url, headers=headers, timeout=10)
+        success = send_to_group(group_id, message)
         
-        if response.status_code == 200:
-            group_info = response.json()
-            return jsonify({
-                "status": "success",
-                "message": "Bot is in group",
-                "group_id": LINE_GROUP_ID,
-                "group_name": group_info.get('groupName'),
-                "bot_in_group": True,
-                "timestamp": time.time()
-            })
-        elif response.status_code == 400:
-            # Bot không có trong group
-            return jsonify({
-                "status": "error",
-                "message": "Bot is NOT in this group",
-                "group_id": LINE_GROUP_ID,
-                "bot_in_group": False,
-                "solution": "Add bot to group using: https://line.me/R/ti/g/{LINE_GROUP_ID}",
-                "timestamp": time.time()
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": f"API Error: {response.status_code}",
-                "details": response.text,
-                "timestamp": time.time()
-            }), 400
-            
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": time.time()
-        }), 500
+        results.append({
+            "group_id": group_id,
+            "group_name": group_name,
+            "success": success
+        })
+    
+    return jsonify({
+        "status": "completed",
+        "total_groups": len(groups),
+        "results": results,
+        "timestamp": time.time()
+    })
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook_handler():
-    """Webhook đơn giản"""
+    """Webhook - QUAN TRỌNG: Nơi lấy Group ID thực"""
     if request.method == 'GET':
         return 'OK', 200
     
@@ -204,20 +174,54 @@ def webhook_handler():
         data = request.json
         events = data.get('events', [])
         
+        logger.info("="*50)
+        logger.info("📨 WEBHOOK EVENT RECEIVED")
+        logger.info(f"Total events: {len(events)}")
+        
         for event in events:
-            if event.get('type') == 'message':
+            event_type = event.get('type')
+            source = event.get('source', {})
+            source_type = source.get('type')
+            
+            logger.info(f"🎯 Event type: {event_type}")
+            logger.info(f"🎯 Source type: {source_type}")
+            
+            if source_type == 'group':
+                group_id = source.get('groupId')
+                logger.info(f"✅ REAL GROUP ID FOUND: {group_id}")
+                logger.info(f"🔗 Group ID type: {'C-prefix' if group_id.startswith('C') else 'Other'}")
+                
+                # Lưu vào file để xem sau
+                with open('group_info.txt', 'w') as f:
+                    f.write(f"Group ID: {group_id}\n")
+                    f.write(f"Time: {datetime.now().isoformat()}\n")
+                    f.write(f"Full event: {json.dumps(event, indent=2)}")
+            
+            if event_type == 'message':
                 message = event.get('message', {})
                 if message.get('type') == 'text':
                     text = message.get('text', '').strip()
-                    source = event.get('source', {})
-                    group_id = source.get('groupId')
+                    logger.info(f"💬 Message text: {text}")
                     
-                    logger.info(f"📨 Message: {text} in group: {group_id}")
+                    # Phản hồi với Group ID thực
+                    if source_type == 'group' and text == '.id':
+                        group_id = source.get('groupId')
+                        reply = f"👥 **GROUP ID THỰC**:\n`{group_id}`\n\n" \
+                               f"⚠️ Dùng ID này trong code!"
+                        send_to_group(group_id, reply)
                     
-                    # Phản hồi đơn giản
-                    if text == '.hello':
-                        send_line_message(group_id, "👋 Hello from bot!")
+                    elif source_type == 'group' and text == '.test':
+                        group_id = source.get('groupId')
+                        reply = f"✅ Bot đang hoạt động!\n" \
+                               f"📊 Group ID: {group_id}\n" \
+                               f"🕒 {datetime.now().strftime('%H:%M:%S')}"
+                        send_to_group(group_id, reply)
                     
+                    elif source_type == 'group' and text == '.hello':
+                        group_id = source.get('groupId')
+                        send_to_group(group_id, "👋 Xin chào từ bot!")
+        
+        logger.info("="*50)
         return 'OK', 200
         
     except Exception as e:
@@ -227,18 +231,26 @@ def webhook_handler():
 # ==================== CHẠY SERVER ====================
 if __name__ == '__main__':
     logger.info("="*60)
-    logger.info("🚀 LINE BOT DEBUG SERVER")
-    logger.info(f"👥 Target Group: {LINE_GROUP_ID}")
+    logger.info("🚀 LINE BOT GROUP FINDER")
     logger.info("="*60)
     
-    # Test token khi khởi động
-    logger.info("🔐 Testing token...")
+    # Test token
     is_valid, bot_info = test_token()
-    
     if is_valid:
-        logger.info(f"✅ Token valid! Bot: {bot_info.get('displayName')}")
+        logger.info(f"✅ Bot: {bot_info.get('displayName')}")
+        
+        # Lấy groups
+        groups = get_bot_groups()
+        if groups:
+            logger.info(f"📊 Bot is in {len(groups)} groups:")
+            for group in groups:
+                group_id = group.get('groupId')
+                group_name = group.get('groupName', 'Unknown')
+                logger.info(f"  • {group_name} - ID: {group_id}")
+        else:
+            logger.warning("⚠️ Bot is not in any groups")
     else:
-        logger.error("❌ Token invalid! Check your LINE Developer Console")
+        logger.error("❌ Token invalid!")
     
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
