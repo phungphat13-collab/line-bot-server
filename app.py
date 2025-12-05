@@ -734,6 +734,173 @@ def job_complete():
         logger.error(f"❌ Lỗi job complete: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/check_exit', methods=['POST'])
+@require_local_auth
+def check_exit():
+    """API để local kiểm tra lệnh thoát"""
+    try:
+        data = request.json
+        local_id = data.get('local_id')
+        user_id = data.get('user_id')
+        
+        # Kiểm tra xem user này có trong active automations không
+        # Nếu không có nghĩa là đã bị xóa (đã thoát)
+        if user_id and user_id not in active_automations:
+            logger.info(f"🛑 User {user_id} không còn trong active, yêu cầu local thoát")
+            return jsonify({
+                "should_exit": True,
+                "message": "User không còn trong active automations"
+            })
+        
+        # Kiểm tra xem local có đang chạy job của user này không
+        if local_id in local_connections:
+            job = local_connections[local_id].get("current_job")
+            if job:
+                job_user_id = job.get("data", {}).get("user_id")
+                if job_user_id == user_id and user_id not in active_automations:
+                    logger.info(f"🛑 Job của {user_id} đã bị xóa, yêu cầu local thoát")
+                    return jsonify({
+                        "should_exit": True,
+                        "message": "Job đã bị xóa khỏi hệ thống"
+                    })
+        
+        return jsonify({
+            "should_exit": False,
+            "message": "Tiếp tục chạy"
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi check_exit: {e}")
+        return jsonify({
+            "should_exit": False,
+            "message": f"Error: {str(e)}"
+        })
+
+@app.route('/check_local_exit', methods=['POST'])
+def check_local_exit():
+    """API đơn giản để local kiểm tra thoát - KHÔNG cần auth để dễ kiểm tra"""
+    try:
+        data = request.json
+        local_id = data.get('local_id')
+        
+        if not local_id:
+            return jsonify({
+                "should_exit": False,
+                "message": "Missing local_id"
+            })
+        
+        # Logic đơn giản: Nếu local đang chạy job mà job không còn trong hệ thống
+        if local_id in local_connections:
+            job = local_connections[local_id].get("current_job")
+            if job:
+                job_id = job.get("job_id")
+                user_id = job.get("data", {}).get("user_id")
+                
+                # KIỂM TRA 1: Job có còn trong job_queue không?
+                job_in_queue = any(j.get("job_id") == job_id for j in job_queue)
+                
+                # KIỂM TRA 2: User có còn trong active automations không?
+                user_in_active = user_id in active_automations
+                
+                # KIỂM TRA 3: Job có bị đánh dấu là đã thoát không?
+                job_exit_marker = f"EXIT_{user_id}"
+                
+                logger.info(f"🔍 Check exit cho local {local_id}: Job in queue={job_in_queue}, User active={user_in_active}")
+                
+                if not job_in_queue and not user_in_active:
+                    logger.info(f"🛑 Local {local_id} nhận lệnh thoát: Job không còn trong hệ thống")
+                    return jsonify({
+                        "should_exit": True,
+                        "message": "Job đã bị xóa, thoát web",
+                        "reason": "job_not_found"
+                    })
+                
+                # KIỂM TRA THÊM: Nếu user đã gửi lệnh thoát web
+                # (thêm logic này nếu server lưu trạng thái thoát)
+                if user_id and user_id in user_sessions:
+                    session_info = user_sessions[user_id]
+                    # Nếu session có đánh dấu vừa thoát (trong vòng 30s)
+                    last_exit_str = session_info.get("last_exit")
+                    if last_exit_str:
+                        try:
+                            last_exit = datetime.fromisoformat(last_exit_str.replace('Z', '+00:00'))
+                            time_diff = (datetime.now() - last_exit).total_seconds()
+                            if time_diff < 30:  # Trong vòng 30s sau khi thoát
+                                logger.info(f"🛑 User {user_id} vừa thoát {time_diff:.0f}s trước, yêu cầu local dừng")
+                                return jsonify({
+                                    "should_exit": True,
+                                    "message": "User vừa thoát web",
+                                    "reason": "user_exited_recently"
+                                })
+                        except:
+                            pass
+        
+        return jsonify({
+            "should_exit": False,
+            "message": "Tiếp tục chạy",
+            "reason": "no_exit_command"
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi check_local_exit: {e}")
+        return jsonify({
+            "should_exit": False,
+            "message": f"Error: {str(e)}"
+        })
+
+# ==================== ENDPOINT FORCE THOÁT ====================
+@app.route('/force_exit_local', methods=['POST'])
+def force_exit_local():
+    """API để force local thoát (dùng khi cần thiết)"""
+    try:
+        data = request.json
+        local_id = data.get('local_id')
+        
+        if not local_id:
+            return jsonify({"status": "error", "message": "Missing local_id"}), 400
+        
+        if local_id not in local_connections:
+            return jsonify({"status": "error", "message": "Local not found"}), 404
+        
+        logger.info(f"🛑 FORCE EXIT local {local_id}")
+        
+        # Lấy thông tin job đang chạy
+        job = local_connections[local_id].get("current_job")
+        if job:
+            user_id = job.get("data", {}).get("user_id")
+            
+            # Xóa khỏi active automations
+            if user_id in active_automations:
+                del active_automations[user_id]
+                logger.info(f"🗑️ Đã xóa {user_id} khỏi active automations")
+            
+            # Xóa job khỏi queue nếu có
+            for i, j in enumerate(job_queue):
+                if j.get("data", {}).get("user_id") == user_id:
+                    job_queue.pop(i)
+                    logger.info(f"🗑️ Đã xóa job của {user_id} khỏi queue")
+                    break
+        
+        # Reset local
+        local_connections[local_id]["status"] = "ready"
+        local_connections[local_id]["current_job"] = None
+        local_connections[local_id]["last_ping"] = datetime.now()
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Đã gửi lệnh force exit cho local {local_id}",
+            "force_exit": True
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi force_exit_local: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ==================== ENDPOINTS QUẢN LÝ ====================
+@app.route('/locals_status', methods=['GET'])
+def get_locals_status():
+    """API xem trạng thái tất cả máy local"""
+
 # ... (giữ nguyên các endpoints khác)
 
 # ==================== WEBHOOK LINE ====================
