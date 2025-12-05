@@ -590,9 +590,18 @@ def index():
     bot_info = get_bot_info()
     
     # Thống kê
-    online_locals = sum(1 for local_id, info in local_connections.items() 
-                       if info.get("last_ping") and 
-                       (datetime.now() - (datetime.fromisoformat(info.get("last_ping").replace('Z', '+00:00')) if isinstance(info.get("last_ping"), str) else info.get("last_ping"))).total_seconds() < 60)
+    online_locals = 0
+    for local_id, info in local_connections.items():
+        last_ping = info.get("last_ping")
+        if last_ping:
+            if isinstance(last_ping, str):
+                try:
+                    last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                except:
+                    last_ping = datetime.now()
+            time_diff = (datetime.now() - last_ping).total_seconds()
+            if time_diff < 60:
+                online_locals += 1
     
     return jsonify({
         "status": "online",
@@ -945,7 +954,10 @@ def handle_status_command(user_id, chat_id, chat_type, group_id):
             last_ping = info.get("last_ping")
             if last_ping:
                 if isinstance(last_ping, str):
-                    last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                    try:
+                        last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                    except:
+                        last_ping = datetime.now()
                 time_diff = (datetime.now() - last_ping).total_seconds()
                 if time_diff < 60:
                     online_locals += 1
@@ -1096,7 +1108,10 @@ def handle_queue_command(chat_id, chat_type, group_id):
             last_ping = info.get("last_ping")
             if last_ping:
                 if isinstance(last_ping, str):
-                    last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                    try:
+                        last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                    except:
+                        last_ping = datetime.now()
                 time_diff = (datetime.now() - last_ping).total_seconds()
                 if time_diff < 60:
                     online_locals += 1
@@ -1130,7 +1145,10 @@ def sync_worker():
                     last_ping = info.get("last_ping")
                     if last_ping:
                         if isinstance(last_ping, str):
-                            last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                            try:
+                                last_ping = datetime.fromisoformat(last_ping.replace('Z', '+00:00'))
+                            except:
+                                last_ping = datetime.now()
                         time_diff = (datetime.now() - last_ping).total_seconds()
                         if time_diff < 60:
                             online_locals += 1
