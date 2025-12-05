@@ -1,14 +1,34 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+LINE Bot Server - Local Automation
+Phiên bản: 6.0 - Fix Unicode/Emoji crash
+"""
+
 from flask import Flask, request, jsonify
 import requests
 import time
 import logging
 import os
+import sys
+import io
 from datetime import datetime, timedelta
 import threading
 import hashlib
 import hmac
 import base64
 from functools import wraps
+
+# ==================== FIX UNICODE ENCODING ====================
+# Thiết lập encoding mặc định
+if sys.version_info.major == 3:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+# Thiết lập locale
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['LC_ALL'] = 'C.UTF-8'
+os.environ['LANG'] = 'C.UTF-8'
 
 app = Flask(__name__)
 
@@ -18,16 +38,37 @@ LINE_CHANNEL_SECRET = "af29ee5866ddf060e20024b1c08bc2cf"
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
 PING_INTERVAL = 10
 
-# ==================== LOGGING ====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot_server.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+# ==================== LOGGING (FIX UNICODE) ====================
+# Tạo logger với encoding UTF-8
+class UTF8Formatter(logging.Formatter):
+    def format(self, record):
+        # Chuyển message thành string và encode/decode đúng cách
+        if isinstance(record.msg, bytes):
+            record.msg = record.msg.decode('utf-8', errors='ignore')
+        elif not isinstance(record.msg, str):
+            record.msg = str(record.msg)
+        return super().format(record)
+
+# Cấu hình logging
+log_formatter = UTF8Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# File handler với UTF-8
+file_handler = logging.FileHandler('bot_server.log', encoding='utf-8')
+file_handler.setFormatter(log_formatter)
+
+# Stream handler
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(log_formatter)
+
+# Tạo logger
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
+
+# Tắt log của các thư viện khác
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 # ==================== QUẢN LÝ DỮ LIỆU ====================
 group_queues = {}
@@ -1026,47 +1067,60 @@ def process_line_command(command_text, user_id, chat_id, chat_type, group_id=Non
         )
 
 def send_welcome_message(chat_id, chat_type):
-    """Gửi tin nhắn chào mừng"""
-    welcome_message = """🎉 Xin chào! Tôi là Bot Ticket Automation
-
-🤖 Tôi có thể giúp tự động hóa xử lý ticket trên hệ thống.
-
-📝 LỆNH TRONG GROUP (bắt đầu bằng dấu .):
-• .login username:password - Đăng nhập & chạy auto
-• .thoát web - Kết thúc và giải phóng slot NGAY LẬP TỨC
-• .status - Xem trạng thái
-• .queue - Xem hàng chờ
-• .help - Hướng dẫn đầy đủ
-• .test - Test bot hoạt động
-
-⚡ CHẾ ĐỘ MỚI:
-• Thoát web → Giải phóng slot NGAY
-• Có thể login lại username mới NGAY LẬP TỨC
-• Công bằng và minh bạch!"""
-    
-    send_line_message_direct(chat_id, LINE_CHANNEL_TOKEN, welcome_message, chat_type)
-
+    """Gửi tin nhắn chào mừng - FIX UNICODE"""
+    try:
+        welcome_message = (
+            "🎉 Xin chao! Toi la Bot Ticket Automation\n\n"
+            "📝 LỆNH TRONG GROUP (bat dau bang dau .):\n"
+            "• .login username:password - Dang nhap & chay auto\n"
+            "• .thoát web - Ket thuc va giai phong slot\n"
+            "• .status - Xem trang thai\n"
+            "• .help - Huong dan day du\n"
+            "• .test - Test bot hoat dong\n\n"
+            "🔒 CHẾ ĐỘ LUÂN PHIÊN:\n"
+            "• Chi 1 nguoi su dung tai 1 thoi diem\n"
+            "• Tu dong xep hang cho\n"
+            "• Cong bang va minh bach!"
+        )
+        
+        send_line_message_direct(chat_id, LINE_CHANNEL_TOKEN, welcome_message, chat_type)
+    except Exception as e:
+        logger.error(f"❌ Lỗi welcome message: {e}")
+        
 def send_help_message(chat_id, chat_type, group_id=None):
-    """Gửi tin nhắn trợ giúp"""
-    help_text = """🤖 TICKET AUTOMATION - LOCAL MODE
-
-📝 LỆNH (bắt đầu bằng dấu .):
-• .help - Hướng dẫn
-• .login username:password - Đăng nhập & chạy auto ticket
-• .status - Trạng thái hệ thống  
-• .thoát web - Thoát web NGAY và về standby
-• .test - Test bot hoạt động
-
-⚡ CÁCH HOẠT ĐỘNG MỚI:
-1. .login username:password → Đăng nhập và chạy
-2. .thoát web → Kết thúc NGAY, giải phóng slot
-3. Có thể .login username_mới ngay lập tức
-
-👥 TRONG GROUP:
-• 1 người sử dụng tại 1 thời điểm
-• Thoát web → Giải phóng slot NGAY
-    
-    send_line_message_direct(chat_id, LINE_CHANNEL_TOKEN, help_text, chat_type)
+    """Gửi tin nhắn trợ giúp - FIX UNICODE"""
+    try:
+        # SỬ DỤNG EMOJI BẰNG UNICODE ESCAPE
+        help_text = (
+            "📝 LỆNH (bắt đầu bằng dấu .):\n"
+            "• .help - Hướng dẫn\n"
+            "• .login username:password - Đăng nhập & chạy auto ticket\n"
+            "• .status - Trạng thái hệ thống\n"  
+            "• .thoát web - Thoát web NGAY và về standby\n"
+            "• .test - Test bot hoạt động\n\n"
+            "⚡ CÁCH HOẠT ĐỘNG MỚI:\n"
+            "1. .login username:password → Đăng nhập và chạy\n"
+            "2. .thoát web → Kết thúc NGAY, giải phóng slot\n"
+            "3. Có thể .login username_mới ngay lập tức\n\n"
+            "👥 TRONG GROUP:\n"
+            "• 1 người sử dụng tại 1 thời điểm\n"
+            "• Thoát web → Giải phóng slot NGAY"
+        )
+        
+        send_line_message_direct(chat_id, LINE_CHANNEL_TOKEN, help_text, chat_type)
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi gửi help message: {e}")
+        # Fallback: gửi message đơn giản không có emoji
+        simple_help = (
+            "LỆNH (bắt đầu bằng dấu .):\n"
+            "- .help - Huong dan\n"
+            "- .login username:password - Dang nhap\n"
+            "- .status - Trang thai\n"
+            "- .thoát web - Thoat web\n"
+            "- .test - Test bot"
+        )
+        send_line_message_direct(chat_id, LINE_CHANNEL_TOKEN, simple_help, chat_type)
 
 # ==================== SYNC WORKER ====================
 def sync_worker():
