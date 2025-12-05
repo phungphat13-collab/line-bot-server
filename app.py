@@ -16,7 +16,7 @@ app = Flask(__name__)
 LINE_CHANNEL_TOKEN = "7HxJf6ykrTfMuz918kpokPMNUZOqpRv8FcGoJM/dkP8uIaqrwU5xFC+M8RoLUxYkkfZdrokoC9pMQ3kJv/SKxXTWTH1KhUe9fdXsNqVZXTA1w21+Wp1ywTQxZQViR2DVqR8w6CPvQpFJCbdvynuvSQdB04t89/1O/w1cDnyilFU="
 LINE_CHANNEL_SECRET = "af29ee5866ddf060e20024b1c08bc2cf"
 SERVER_URL = "https://line-bot-server-m54s.onrender.com"
-PING_INTERVAL = 30
+PING_INTERVAL = 10
 
 # ==================== LOGGING ====================
 logging.basicConfig(
@@ -1055,7 +1055,6 @@ def send_help_message(chat_id, chat_type, group_id=None):
 • .login username:password - Đăng nhập & chạy auto ticket
 • .status - Trạng thái hệ thống  
 • .thoát web - Thoát web NGAY và về standby
-• .queue - Xem hàng chờ (trong group)
 • .test - Test bot hoạt động
 
 ⚡ CÁCH HOẠT ĐỘNG MỚI:
@@ -1066,12 +1065,6 @@ def send_help_message(chat_id, chat_type, group_id=None):
 👥 TRONG GROUP:
 • 1 người sử dụng tại 1 thời điểm
 • Thoát web → Giải phóng slot NGAY
-• Login lại → Chiếm slot nếu trống
-
-⚙️ TRẠNG THÁI HỆ THỐNG:
-• Server: luôn online
-• Local: kết nối qua ping 30s
-• Job: xếp hàng chờ nếu local bận"""
     
     send_line_message_direct(chat_id, LINE_CHANNEL_TOKEN, help_text, chat_type)
 
